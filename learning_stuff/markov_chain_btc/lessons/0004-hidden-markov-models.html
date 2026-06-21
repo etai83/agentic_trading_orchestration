@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 4: Introduction to Hidden Markov Models (HMM)</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Lesson 4: Introduction to Hidden Markov Models (HMM)</h1>
+      <div class="meta">
+        <span>Course: Markov Chain BTC Trading</span>
+        <span>Lesson: 0004</span>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>The Limitations of Simple Markov Chains</h2>
+        <p>In standard Markov chains, the states are directly observed and hard-coded (e.g., daily returns > 1% is "Bull"). However, financial markets rarely follow such simple, rigid boundaries. Volatility changes over time, and a +0.5% return might be considered highly bullish in a low-volatility environment, but flat or even bearish in a high-volatility crash.</p>
+        <p>To capture these shifting conditions, we use <strong>Hidden Markov Models (HMM)</strong>.</p>
+      </section>
+
+      <section>
+        <h2>What makes a Markov Model "Hidden"?</h2>
+        <p>In an HMM, the underlying states (the "market regimes") are <strong>latent (unobserved)</strong>. We cannot see the state directly. Instead, the hidden states generate the <strong>observable outputs</strong> (e.g., daily prices or volumes) that we actually measure.</p>
+        <p>An HMM consists of two primary probability components:</p>
+        <ol>
+          <li><strong>Transition Probabilities:</strong> The probability of moving from one hidden state to another (e.g., transitioning from a "Quiet Bull" regime to a "Volatile Bear" regime).</li>
+          <li><strong>Emission Probabilities:</strong> The probability distribution of the observed data given a specific hidden state. In finance, this is typically modeled as a Gaussian (normal) distribution with a specific mean and variance for each state.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Fitting an HMM in Python</h2>
+        <p>In Python, we use the `hmmlearn` library. Here is how we fit a 2-state HMM on a simulated return series to discover the hidden regimes:</p>
+        
+        <pre><code class="language-python">import numpy as np
+import pandas as pd
+from hmmlearn import hmm
+
+# 1. Simulate data representing two different regimes:
+# Regime 0 (Quiet Bull): High mean, low volatility
+# Regime 1 (Volatile Bear): Low mean, high volatility
+np.random.seed(42)
+regime_0 = np.random.normal(loc=0.002, scale=0.01, size=200)
+regime_1 = np.random.normal(loc=-0.005, scale=0.03, size=100)
+returns = np.concatenate([regime_0, regime_1])
+
+# HMM expects a 2D array of features
+X = returns.reshape(-1, 1)
+
+# 2. Define and fit a Gaussian HMM with 2 hidden states
+model = hmm.GaussianHMM(n_components=2, covariance_type="diag", n_iter=100, random_state=42)
+model.fit(X)
+
+# 3. Inspect the discovered hidden states
+hidden_states = model.predict(X)
+
+print("--- Transition Matrix Between Hidden States ---")
+print(model.transmat_)
+
+print("\n--- Discovered State Characteristics ---")
+for i in range(model.n_components):
+    mean = model.means_[i][0]
+    variance = np.diag(model.covars_[i])[0]
+    print(f"State {i}: Mean Return = {mean:.4f}, Volatility = {np.sqrt(variance):.4f}")
+</code></pre>
+
+        <p>The model will output the transition matrix between the hidden states, and the mean/volatility characteristics it discovered for each state. The algorithm groups the data automatically, without you needing to specify hard return thresholds.</p>
+      </section>
+
+      <section>
+        <h2>Interactive Check</h2>
+        
+        <!-- Quiz 1 -->
+        <div class="quiz-container" id="quiz-1">
+          <div class="quiz-title">
+            <span>Question 1:</span> Why are states in a Hidden Markov Model referred to as hidden?
+          </div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, true, 'Correct! The states are latent and cannot be directly observed; we only infer them from observable data.')">Because states are not directly observed.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, false, 'No, states are determined by fitting distributions to historical data, not random choice.')">Because states are always random entries.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, false, 'No, the states transition dynamically and are not static.')">Because states are purely static factors.</div>
+          <div class="quiz-feedback"></div>
+        </div>
+
+        <!-- Quiz 2 -->
+        <div class="quiz-container" id="quiz-2">
+          <div class="quiz-title">
+            <span>Question 2:</span> In an HMM, what determines the distribution of the observed data for a given hidden state?
+          </div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, true, 'Correct! Emission probabilities describe how the observed outputs are generated by each state.')">The emission probability distribution.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, false, 'Transition probabilities determine state changes, not observed data distributions.')">The transition probability equations.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, false, 'Volatility coefficients are statistics of the data, not model distribution parameters.')">The historical volatility coefficient.</div>
+          <div class="quiz-feedback"></div>
+        </div>
+      </section>
+
+      <section class="callout">
+        <h4>Recommended Reading</h4>
+        <p>For a mathematical breakdown of Baum-Welch and Viterbi algorithms used to fit HMMs, read: 
+          <a href="https://en.wikipedia.org/wiki/Hidden_Markov_model" target="_blank">Wikipedia's Hidden Markov Model article</a>.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Topic: Hidden Markov Models</span>
+      <div class="nav-links">
+        <a href="0003-backtesting-markov-strategy.html">Previous Lesson</a>
+        <a href="../MISSION.md">Mission</a>
+        <a href="../RESOURCES.md">Resources</a>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    function checkAnswer(quizId, optionElement, isCorrect, feedbackText) {
+      const container = document.getElementById(quizId);
+      const options = container.getElementsByClassName('quiz-option');
+      const feedback = container.getElementsByClassName('quiz-feedback')[0];
+      
+      // Clear previous styles
+      for (let opt of options) {
+        opt.classList.remove('correct', 'incorrect');
+      }
+      
+      // Apply new styles
+      if (isCorrect) {
+        optionElement.classList.add('correct');
+        feedback.className = 'quiz-feedback show';
+        feedback.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
+        feedback.style.color = 'var(--success-color)';
+        feedback.innerHTML = `<strong>Correct!</strong> ${feedbackText}`;
+      } else {
+        optionElement.classList.add('incorrect');
+        feedback.className = 'quiz-feedback show';
+        feedback.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
+        feedback.style.color = 'var(--error-color)';
+        feedback.innerHTML = `<strong>Try again:</strong> ${feedbackText}`;
+      }
+    }
+  </script>
+</body>
+</html>

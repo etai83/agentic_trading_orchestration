@@ -19,3 +19,11 @@ _Avoid_: Iterative backtesting, loop trading
 **Regime-Switching Strategy**:
 A quantitative trading strategy that changes its behavior (e.g., leverage, assets, or trading signals) depending on the identified state of the market.
 _Avoid_: Static strategy, fixed indicator
+
+**Hidden Markov Model (HMM)**:
+A statistical model in which the system is assumed to be a Markov process with unobserved (latent) states that generate observable outputs.
+_Avoid_: Visible Markov, open state model
+
+**Emission Probability**:
+The probability distribution of observing a specific value or event (e.g., a specific return range) given that the system is in a particular hidden state.
+_Avoid_: Transition chance, output score
