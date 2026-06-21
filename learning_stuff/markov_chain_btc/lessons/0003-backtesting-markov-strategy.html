@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 3: Backtesting a Markov-Chain Strategy</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Lesson 3: Backtesting a Markov-Chain Strategy</h1>
+      <div class="meta">
+        <span>Course: Markov Chain BTC Trading</span>
+        <span>Lesson: 0003</span>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>From Transition Probabilities to Trading Signals</h2>
+        <p>Now that we can compute a transition matrix, we can use it to build a <strong>Regime-Switching Strategy</strong>. The logic is simple: we look at today's market state, find the probabilities of tomorrow's state from our matrix, and enter a position if the probability of a bullish transition is high.</p>
+        <p>In this lesson, we will write a vectorized backtest in Python to simulate this strategy's historical performance.</p>
+      </section>
+
+      <section>
+        <h2>The Strategy Rules</h2>
+        <p>We define a simple conditional trading rule:</p>
+        <ul>
+          <li><strong>Buy / Hold:</strong> If today's state has a transition probability to a "Bull" state greater than 50% (P(Bull | Current State) > 0.50).</li>
+          <li><strong>Stay in Cash:</strong> Otherwise, exit the market (no position).</li>
+        </ul>
+        <div class="callout warning">
+          <h4>⚠️ Overfitting and Look-Ahead Bias</h4>
+          <p>If we calculate the transition matrix on the <em>entire</em> dataset and then backtest on the same dataset, we commit <strong>look-ahead bias</strong> (using future data to predict the past). In professional setups, we calculate the matrix on a rolling historical window (training set) and trade on the next period (test set).</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Python Vectorized Backtest Code</h2>
+        <p>Here is the code to calculate transition-dependent signals and compute cumulative returns:</p>
+        
+        <pre><code class="language-python">import pandas as pd
+import numpy as np
+
+# 1. Create historical price series
+np.random.seed(42)
+dates = pd.date_range(start="2026-01-01", periods=100)
+returns = np.random.normal(loc=0.001, scale=0.02, size=100) # simulated returns
+prices = 30000 * np.exp(np.cumsum(returns))
+
+df = pd.DataFrame({"price": prices, "return": returns}, index=dates)
+
+# 2. Categorize daily states
+df["state"] = "Flat"
+df.loc[df["return"] > 0.01, "state"] = "Bull"
+df.loc[df["return"] < -0.01, "state"] = "Bear"
+
+# 3. Fit empirical transition matrix (using all data for demonstration)
+df["next_state"] = df["state"].shift(-1)
+transitions = pd.crosstab(df["state"], df["next_state"])
+transition_matrix = transitions.div(transitions.sum(axis=1), axis=0)
+
+print("--- Transition Matrix ---")
+print(transition_matrix)
+
+# 4. Map states to Buy/Sell signals (1 = hold, 0 = cash)
+# We buy if the transition probability to Bull from current state is > 35% (using a lower threshold for simulated noisy data)
+bull_probabilities = transition_matrix["Bull"].to_dict()
+df["prob_to_bull"] = df["state"].map(bull_probabilities)
+
+# Shift signal by 1 day because signal generated today is traded tomorrow
+df["signal"] = (df["prob_to_bull"] > 0.35).astype(int).shift(1).fillna(0)
+
+# 5. Compute strategy returns
+df["strategy_return"] = df["signal"] * df["return"]
+
+# 6. Performance evaluation
+cumulative_market = np.exp(np.cumsum(df["return"])) - 1
+cumulative_strategy = np.exp(np.cumsum(df["strategy_return"])) - 1
+
+win_rate = (df.loc[df["signal"] == 1, "return"] > 0).mean()
+
+print(f"\nFinal Buy & Hold Return: {cumulative_market.iloc[-1]:.2%}")
+print(f"Final Strategy Return: {cumulative_strategy.iloc[-1]:.2%}")
+print(f"Strategy Win Rate: {win_rate:.2%}")
+</code></pre>
+      </section>
+
+      <section>
+        <h2>Interactive Check</h2>
+        
+        <!-- Quiz 1 -->
+        <div class="quiz-container" id="quiz-1">
+          <div class="quiz-title">
+            <span>Question 1:</span> What is look-ahead bias in backtesting?
+          </div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, true, 'Correct! Look-ahead bias involves using future information to make historical trading decisions, making backtest results unrealistically good.')">Using future data to make past trade decisions.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, false, 'No, using past data to trade future events is standard backtesting behavior.')">Using past data to make future trade decisions.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, false, 'No, this is a random control that has no relevance to look-ahead bias.')">Using random data to make random trade choices.</div>
+          <div class="quiz-feedback"></div>
+        </div>
+
+        <!-- Quiz 2 -->
+        <div class="quiz-container" id="quiz-2">
+          <div class="quiz-title">
+            <span>Question 2:</span> If your strategy only buys when the transition probability of transitioning to Bull is > 0.5, what is this called?
+          </div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, true, 'Correct! It modifies trading logic dynamically based on estimated transition probabilities/regimes.')">A conditional regime trading rule.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, false, 'Trend following is based on momentum indicators like moving averages, not transition probability.')">A standard trend following method.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, false, 'A random walk method has no logic or conditioning on state transitions.')">An arbitrary asset trading method.</div>
+          <div class="quiz-feedback"></div>
+        </div>
+      </section>
+
+      <section class="callout">
+        <h4>Recommended Reading</h4>
+        <p>To learn more about the pitfalls of backtesting, read: 
+          <a href="https://www.quantstart.com/articles/Successful-Backtesting-of-Algorithmic-Trading-Strategies-Part-I/" target="_blank">QuantStart's Successful Backtesting Strategies</a>.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Topic: Backtesting Markov Strategies</span>
+      <div class="nav-links">
+        <a href="0002-empirical-transition-matrix.html">Previous Lesson</a>
+        <a href="../MISSION.md">Mission</a>
+        <a href="../RESOURCES.md">Resources</a>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    function checkAnswer(quizId, optionElement, isCorrect, feedbackText) {
+      const container = document.getElementById(quizId);
+      const options = container.getElementsByClassName('quiz-option');
+      const feedback = container.getElementsByClassName('quiz-feedback')[0];
+      
+      // Clear previous styles
+      for (let opt of options) {
+        opt.classList.remove('correct', 'incorrect');
+      }
+      
+      // Apply new styles
+      if (isCorrect) {
+        optionElement.classList.add('correct');
+        feedback.className = 'quiz-feedback show';
+        feedback.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
+        feedback.style.color = 'var(--success-color)';
+        feedback.innerHTML = `<strong>Correct!</strong> ${feedbackText}`;
+      } else {
+        optionElement.classList.add('incorrect');
+        feedback.className = 'quiz-feedback show';
+        feedback.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
+        feedback.style.color = 'var(--error-color)';
+        feedback.innerHTML = `<strong>Try again:</strong> ${feedbackText}`;
+      }
+    }
+  </script>
+</body>
+</html>

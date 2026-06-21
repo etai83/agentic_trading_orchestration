@@ -11,3 +11,11 @@ _Avoid_: Memory property, state sequence
 **Transition Probability Matrix**:
 A square matrix representing the probabilities of moving between states in a single step, where each row sums to exactly 1.0.
 _Avoid_: Likelihood matrix, state chart
+
+**Vectorized Backtesting**:
+A method of simulating historical trading performance by performing simultaneous array operations on a full dataset rather than looping chronologically through events.
+_Avoid_: Iterative backtesting, loop trading
+
+**Regime-Switching Strategy**:
+A quantitative trading strategy that changes its behavior (e.g., leverage, assets, or trading signals) depending on the identified state of the market.
+_Avoid_: Static strategy, fixed indicator
