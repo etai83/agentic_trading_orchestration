@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 2: Computing Transition Matrices in Python</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Lesson 2: Computing Transition Matrices in Python</h1>
+      <div class="meta">
+        <span>Course: Markov Chain BTC Trading</span>
+        <span>Lesson: 0002</span>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>From Math to Python</h2>
+        <p>In Lesson 1, we learned that a transition matrix represents the probabilities of moving between states. Now, we will write Python code using `pandas` and `numpy` to compute an <strong>empirical transition matrix</strong> from historical Bitcoin price data.</p>
+        <p>This process has four steps:</p>
+        <ol>
+          <li>Calculate daily log returns.</li>
+          <li>Discretize returns into state labels (e.g., Bull, Bear, Flat).</li>
+          <li>Align today's state with tomorrow's state.</li>
+          <li>Build and normalize a frequency crosstab.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Step-by-Step Implementation</h2>
+        <p>Here is the Python implementation. We will compute the transition matrix from a mock dataset representing daily BTC prices:</p>
+        
+        <pre><code class="language-python">import pandas as pd
+import numpy as np
+
+# 1. Create a dummy price series representing BTC
+prices = [30000, 30500, 30100, 30200, 31000, 30400, 29900, 30300]
+df = pd.DataFrame({"price": prices})
+
+# 2. Calculate daily percentage returns
+df["return"] = df["price"].pct_change()
+
+# 3. Categorize returns into States: Bull (1), Bear (-1), Flat (0)
+def categorize_state(ret):
+    if pd.isna(ret):
+        return np.nan
+    if ret > 0.01:
+        return "Bull"
+    elif ret < -0.01:
+        return "Bear"
+    else:
+        return "Flat"
+
+df["state"] = df["return"].apply(categorize_state)
+
+# 4. Shift tomorrow's state to align with today's row
+df["next_state"] = df["state"].shift(-1)
+
+# Drop any rows with NaN states
+df = df.dropna(subset=["state", "next_state"])
+print(df[["state", "next_state"]])
+</code></pre>
+
+        <p>The resulting DataFrame shows transitions day-by-day:</p>
+        <pre><code>  state next_state
+1  Bull       Bear
+2  Bear       Flat
+3  Flat       Bull
+4  Bull       Bear
+5  Bear       Bear
+6  Bear       Bull
+</code></pre>
+      </section>
+
+      <section>
+        <h2>Generating the Transition Matrix</h2>
+        <p>To count the transitions and convert them to probabilities, we use `pd.crosstab` and normalize across the rows by dividing each row by its sum:</p>
+
+        <pre><code class="language-python"># Count transitions
+transition_counts = pd.crosstab(df["state"], df["next_state"])
+
+# Normalize by row sum to get transition probabilities
+transition_matrix = transition_counts.div(transition_counts.sum(axis=1), axis=0)
+
+print(transition_matrix)
+</code></pre>
+
+        <p>This yields our matrix. If a transition never occurred in the historical dataset, the value will be 0.0. In real-world datasets with thousands of data points, these probabilities stabilize into powerful indicators of regime transitions.</p>
+      </section>
+
+      <section>
+        <h2>Interactive Check</h2>
+        
+        <!-- Quiz 1 -->
+        <div class="quiz-container" id="quiz-1">
+          <div class="quiz-title">
+            <span>Question 1:</span> In Pandas, which function is most efficient for aligning a state today with its next-day transition state?
+          </div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, true, 'Correct! Shifting by -1 moves future values back one step, aligning tomorrow\'s state with today\'s data.')">The shift negative one function.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, false, 'Shifting by positive 1 would align yesterday\'s state with today\'s data.')">The shift positive one function.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, false, 'Rolling windows compute rolling stats, not index alignments.')">The rolling window mean function.</div>
+          <div class="quiz-feedback"></div>
+        </div>
+
+        <!-- Quiz 2 -->
+        <div class="quiz-container" id="quiz-2">
+          <div class="quiz-title">
+            <span>Question 2:</span> What Pandas function is used to create the transition frequency table from the current and next states?
+          </div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, true, 'Correct! pd.crosstab computes a frequency table of two factors.')">The cross tab function.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, false, 'Pivot tables aggregate data but are not optimal for raw frequency counts of two columns.')">The pivot table method.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, false, 'Groupby groupings split data but do not output a matrix grid shape automatically.')">The group by operation.</div>
+          <div class="quiz-feedback"></div>
+        </div>
+      </section>
+
+      <section class="callout">
+        <h4>Recommended Reading</h4>
+        <p>For more details on manipulating time series data in Pandas, explore the official: 
+          <a href="https://pandas.pydata.org/docs/user_guide/timeseries.html" target="_blank">Pandas Time Series / Date functionality documentation</a>.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Topic: Empirical Transition Matrices</span>
+      <div class="nav-links">
+        <a href="0001-markov-chain-foundations.html">Previous Lesson</a>
+        <a href="../MISSION.md">Mission</a>
+        <a href="../RESOURCES.md">Resources</a>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    function checkAnswer(quizId, optionElement, isCorrect, feedbackText) {
+      const container = document.getElementById(quizId);
+      const options = container.getElementsByClassName('quiz-option');
+      const feedback = container.getElementsByClassName('quiz-feedback')[0];
+      
+      // Clear previous styles
+      for (let opt of options) {
+        opt.classList.remove('correct', 'incorrect');
+      }
+      
+      // Apply new styles
+      if (isCorrect) {
+        optionElement.classList.add('correct');
+        feedback.className = 'quiz-feedback show';
+        feedback.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
+        feedback.style.color = 'var(--success-color)';
+        feedback.innerHTML = `<strong>Correct!</strong> ${feedbackText}`;
+      } else {
+        optionElement.classList.add('incorrect');
+        feedback.className = 'quiz-feedback show';
+        feedback.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
+        feedback.style.color = 'var(--error-color)';
+        feedback.innerHTML = `<strong>Try again:</strong> ${feedbackText}`;
+      }
+    }
+  </script>
+</body>
+</html>
