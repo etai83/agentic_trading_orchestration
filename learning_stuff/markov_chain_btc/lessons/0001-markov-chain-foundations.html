@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 1: Foundations of Markov Chains in Trading</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .transition-matrix-demo {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 1.5rem 0;
+      padding: 1rem;
+      background-color: var(--bg-secondary);
+      border-radius: 0.5rem;
+      border: 1px solid var(--border-color);
+    }
+    .matrix-cell {
+      text-align: center;
+      padding: 0.75rem;
+      background-color: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 0.25rem;
+    }
+    .matrix-header {
+      font-weight: 700;
+      color: var(--accent-color);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Lesson 1: Foundations of Markov Chains in Trading</h1>
+      <div class="meta">
+        <span>Course: Markov Chain BTC Trading</span>
+        <span>Lesson: 0001</span>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>What is a Markov Chain?</h2>
+        <p>A <strong>Markov chain</strong> is a mathematical model that describes a sequence of possible events. The core assumption of a Markov chain is the <strong>Markov Property</strong> (or "memorylessness"): the probability of transitioning to any future state depends <em>only</em> on the current state, not on the sequence of states that preceded it.</p>
+        
+        <div class="math-block">
+          P(X_{t+1} = x_{t+1} \mid X_t = x_t, X_{t-1} = x_{t-1}, \dots, X_0 = x_0) = P(X_{t+1} = x_{t+1} \mid X_t = x_t)
+        </div>
+
+        <p>In quantitative trading, we use this simplification to model regimes. Instead of looking at the entire history of Bitcoin prices, we look at the current market state (e.g., "high volatility") to estimate the probability of tomorrow's state.</p>
+      </section>
+
+      <section>
+        <h2>Defining Market States</h2>
+        <p>To apply a Markov chain to Bitcoin, we must first discretize the continuous price data into a set of distinct, mutually exclusive <strong>states</strong>. Let's start with a simple 3-state system based on daily price returns:</p>
+        <ul>
+          <li><strong>State Bull (B):</strong> Daily return is greater than +1%</li>
+          <li><strong>State Bear (S):</strong> Daily return is less than -1%</li>
+          <li><strong>State Flat (F):</strong> Daily return is between -1% and +1%</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>The Transition Probability Matrix</h2>
+        <p>A transition probability matrix, denoted as <strong>P</strong>, describes the probability of moving from state <em>i</em> to state <em>j</em> in a single time step. Each row of the matrix represents the starting state, and each column represents the destination state.</p>
+        
+        <p>Because the market must transition into <em>some</em> state tomorrow, <strong>the probabilities in each row must sum to exactly 1.0</strong>.</p>
+        
+        <div class="callout tip">
+          <h4>Example Matrix</h4>
+          <p>Here is an example transition matrix estimated from historical BTC daily data:</p>
+          <div class="transition-matrix-demo">
+            <div class="matrix-cell matrix-header">From \ To</div>
+            <div class="matrix-cell matrix-header">Bull (B)</div>
+            <div class="matrix-cell matrix-header">Bear (S)</div>
+            <div class="matrix-cell">Bull (B)</div>
+            <div class="matrix-cell"><strong>0.45</strong> (stays Bull)</div>
+            <div class="matrix-cell"><strong>0.55</strong> (goes Bear)</div>
+            <div class="matrix-cell">Bear (S)</div>
+            <div class="matrix-cell"><strong>0.30</strong> (goes Bull)</div>
+            <div class="matrix-cell"><strong>0.70</strong> (stays Bear)</div>
+          </div>
+          <p>In this simplified system: if today is a Bull day, there is a 45% chance tomorrow will be a Bull day, and a 55% chance tomorrow will be a Bear day.</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>How This Improves Win Rate</h2>
+        <p>Markov chains help us transition from static trading rules (e.g., "always buy when RSI < 30") to <strong>conditional, regime-dependent strategies</strong>. By identifying states where the transition probability is strongly skewed in our favor, we can selectively enter trades when the statistical win rate is higher.</p>
+      </section>
+
+      <section>
+        <h2>Interactive Check</h2>
+        
+        <!-- Quiz 1 -->
+        <div class="quiz-container" id="quiz-1">
+          <div class="quiz-title">
+            <span>Question 1:</span> Under the Markov property, what determines the probability of tomorrow's state?
+          </div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, false, 'Remember, the Markov property is &quot;memoryless&quot;; only the current moment matters.')">Only the past state of yesterday.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, true, 'Correct! Under the Markov property, only the current state of today dictates the future state.')">Only the current state of today.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-1', this, false, 'Remember, the Markov property is &quot;memoryless&quot;; only the current moment matters.')">All the past historical market data.</div>
+          <div class="quiz-feedback"></div>
+        </div>
+
+        <!-- Quiz 2 -->
+        <div class="quiz-container" id="quiz-2">
+          <div class="quiz-title">
+            <span>Question 2:</span> In a 2-state system (Bull & Bear), if the transition probability P(Bull | Bull) is 0.6, what must P(Bear | Bull) be?
+          </div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, false, 'The sum of all transitions out of a single state must equal 1.0.')">The transition probability is 0.6.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, false, 'The sum of all transitions out of a single state must equal 1.0.')">The transition probability is 0.5.</div>
+          <div class="quiz-option" onclick="checkAnswer('quiz-2', this, true, 'Correct! Since the rows must sum to 1.0, 1.0 - 0.6 = 0.4.')">The transition probability is 0.4.</div>
+          <div class="quiz-feedback"></div>
+        </div>
+      </section>
+
+      <section class="callout">
+        <h4>Recommended Reading</h4>
+        <p>For a detailed overview of applying Hidden Markov Models to financial regimes, read: 
+          <a href="https://www.quantstart.com/articles/hidden-markov-models-for-regime-detection-using-stat-models-in-python/" target="_blank">QuantStart's HMM Guide</a>.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Topic: Markov Chain Foundations</span>
+      <div class="nav-links">
+        <a href="../MISSION.md">Mission</a>
+        <a href="../RESOURCES.md">Resources</a>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    function checkAnswer(quizId, optionElement, isCorrect, feedbackText) {
+      const container = document.getElementById(quizId);
+      const options = container.getElementsByClassName('quiz-option');
+      const feedback = container.getElementsByClassName('quiz-feedback')[0];
+      
+      // Clear previous styles
+      for (let opt of options) {
+        opt.classList.remove('correct', 'incorrect');
+      }
+      
+      // Apply new styles
+      if (isCorrect) {
+        optionElement.classList.add('correct');
+        feedback.className = 'quiz-feedback show';
+        feedback.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
+        feedback.style.color = 'var(--success-color)';
+        feedback.innerHTML = `<strong>Correct!</strong> ${feedbackText}`;
+      } else {
+        optionElement.classList.add('incorrect');
+        feedback.className = 'quiz-feedback show';
+        feedback.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
+        feedback.style.color = 'var(--error-color)';
+        feedback.innerHTML = `<strong>Try again:</strong> ${feedbackText}`;
+      }
+    }
+  </script>
+</body>
+</html>
