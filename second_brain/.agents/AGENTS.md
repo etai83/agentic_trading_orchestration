@@ -8,4 +8,5 @@
 - **Keep Note Selector Reference**: When parsing Google Keep DOM elements:
   - Note title selector: `.IZ65Hb-r4nke-haAclf`
   - Note content selector: `.IZ65Hb-qJTHM-haAclf`
+- **Scraping Strategy (Browser Subagent)**: Do NOT attempt to run local python scripts (like `get_keep_notes.py`) or raw playwright scripts, as headless/automation detection will trigger Google account redirects and Sign-in barriers. Instead, always invoke the native `browser` subagent to navigate to `https://keep.google.com/`, let it capture the page snapshots, and then parse the Google Keep notes from the subagent's snapshot files.
 - **Obsidian Report Format**: Always format Keep digests and reports using Obsidian-flavored markdown, including frontmatter tags, date, source, and alerts for metadata or opinions.
