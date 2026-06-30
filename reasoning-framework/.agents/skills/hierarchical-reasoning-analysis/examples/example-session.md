@@ -25,9 +25,9 @@ Reinforcement Learning from Human/AI Feedback (RLHF/RLAIF) aligns models by trai
 
 ### Scorecard Table
 
-| Depth | Premises | Assumptions | Links | Complete | Counter | Abstraction | Clarity | Total | Composite |
-|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 3 | 4 | 3 | 4 | 4 | 1 | 3 | 5 | 27 | 64.7 |
+| Depth | Premises | Assumptions | Links | Complete | Counter | Abstraction | Clarity | Memory | Total | Composite |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 3 | 4 | 3 | 4 | 4 | 1 | 3 | 5 | 4 | 31 | 68.1 |
 
 ### Score Rationale
 - **Structural Depth (3)**: The deconstruction uses a basic 2-layer nesting. It lacks a deeper vertical taxonomy of the argument's layers.
@@ -38,6 +38,7 @@ Reinforcement Learning from Human/AI Feedback (RLHF/RLAIF) aligns models by trai
 - **Counterargument Awareness (1)**: Completely ignores any potential counterarguments (e.g., that we can inspect internal weights, or that deception is hard to maintain).
 - **Abstraction Quality (3)**: Mixing system-level behavior ("pretends to be aligned") with theoretical outcome levels ("model escapes") in the same subtree.
 - **Clarity of Expression (5)**: Excellent. Nodes are short, self-contained, and highly readable.
+- **Working Memory Consistency (4)**: Good tracking of the main arguments throughout the deconstruction process, though there is minor dilution in tracking how the evaluation criteria shift over the course of the analysis.
 
 ---
 

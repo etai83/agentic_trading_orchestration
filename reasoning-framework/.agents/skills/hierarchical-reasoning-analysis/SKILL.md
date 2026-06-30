@@ -52,16 +52,20 @@ Score the user's deconstruction on these 8 axes. Be critical and rigorous—do n
    - *1*: Layers are mixed arbitrarily (e.g., pairing a low-level implementation detail with a high-level philosophy).
    - *3*: Mostly consistent, with minor occurrences of category mixing.
    - *5*: Perfect taxonomic rigor; nodes at the same horizontal level share the same abstraction depth.
-8. **Clarity of Expression (Clarity)**: Readability and self-containment of the deconstructed blocks.
+ 8. **Clarity of Expression (Clarity)**: Readability and self-containment of the deconstructed blocks.
    - *1*: Blocks are wordy, vague, or require reading the raw text to make sense.
    - *3*: Understandable, but some nodes are overly dense or lack clear labeling.
    - *5*: Each node is a concise, crisp proposition that makes sense independently.
+9. **Working Memory Consistency (Memory)**: Retention and coherence of the mental map during the spoken deconstruction.
+   - *1*: Severe cognitive drift; completely forgets points made earlier, duplicates nodes, or makes contradictory assertions about the structural relationships.
+   - *3*: Remembers main nodes, but secondary branches or relations get muddled or dropped mid-argument as complexity increases.
+   - *5*: Perfect retention of the active structural map; consistently references, builds upon, and integrates all previously mentioned points without duplication or contradiction.
 
 ### Scoring Calculations
 
 Compute the average for each category:
 - **Core Avg** = `(Depth + Premises + Assumptions) / 3`
-- **Rigor Avg** = `(Links + Complete + Counter) / 3`
+- **Rigor Avg** = `(Links + Complete + Counter + Memory) / 4`
 - **Comm Avg** = `(Abstraction + Clarity) / 2`
 
 Calculate the **Composite Score (1–100 Scale)**:
@@ -75,8 +79,8 @@ Calculate the **Composite Score (1–100 Scale)**:
 Read the session file. Before analyzing the user's deconstruction, perform your own independent hierarchical deconstruction of the `## Argument` relative to the `## Claim`. Do this in your thoughts to avoid anchoring bias.
 
 ### Step 2 — Grade the User's Work
-Apply the 8-axis rubric. Under a new section `## Agent Evaluation`, output:
-1. **Scorecard Table**: A clean markdown table of the 8 scores (1–5) and the calculated Composite Score (out of 100).
+Apply the 9-axis rubric. Under a new section `## Agent Evaluation`, output:
+1. **Scorecard Table**: A clean markdown table of the 9 scores (1–5) and the calculated Composite Score (out of 100).
 2. **Score Rationale**: A concise 1-sentence justification for each score.
 
 ### Step 3 — Generate Mermaid Diagrams

@@ -24,9 +24,9 @@ A cognitive training system designed to improve your ability to deconstruct comp
 
 ---
 
-## The Evaluation Rubric (8 Axes, 1–5 Scale)
+## The Evaluation Rubric (9 Axes, 1–5 Scale)
 
-Each session is scored on a 1–5 scale across 8 axes:
+Each session is scored on a 1–5 scale across 9 axes:
 
 1. **Structural Depth**: Number of hierarchy layers (aim for 4+).
 2. **Premise Identification**: Thorough mapping of explicit and implicit premises.
@@ -36,10 +36,11 @@ Each session is scored on a 1–5 scale across 8 axes:
 6. **Counterargument Awareness**: Mapping alternative paths, pivots, or counter-claims.
 7. **Abstraction Quality**: Vertical consistency—no category mixing within horizontal layers.
 8. **Clarity of Expression**: Nodes are concise, self-contained, and crisp propositions.
+9. **Working Memory Consistency**: Retention and coherence of the mental map during spoken deconstruction (no duplication, contradictions, or lost threads).
 
 ### Calculations
 - **Core Score (50%)**: Average of Structural Depth, Premise Identification, and Assumption Surfacing.
-- **Rigor Score (35%)**: Average of Logical Link Validity, Completeness, and Counterargument Awareness.
+- **Rigor Score (35%)**: Average of Logical Link Validity, Completeness, Counterargument Awareness, and Working Memory Consistency.
 - **Communication Score (15%)**: Average of Abstraction Quality and Clarity of Expression.
 - **Composite Score (0–100)**: `(Core Avg * 0.5 + Rigor Avg * 0.35 + Comm Avg * 0.15) * 20`
 
