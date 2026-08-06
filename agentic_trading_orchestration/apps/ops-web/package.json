@@ -2,10 +2,21 @@
   "name": "ops-web",
   "version": "0.1.0",
   "private": true,
-  "description": "ATO Phase 1 ops dashboard (Next.js) — full App Router scaffold in a later ticket",
   "scripts": {
-    "dev": "echo 'Next.js app not scaffolded yet — see Task: ops-web mock UI' && exit 1",
-    "build": "echo 'Next.js app not scaffolded yet' && exit 1",
-    "start": "echo 'Next.js app not scaffolded yet' && exit 1"
+    "dev": "next dev -H 127.0.0.1 -p 3000",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1 -p 3000",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0"
   }
 }

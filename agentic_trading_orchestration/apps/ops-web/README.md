@@ -2,11 +2,16 @@
 
 Next.js operator SPA for Phase 1 ATO.
 
-**Status:** placeholder only. Full App Router scaffold, rewrites to `ops-api`, and UI land under
-[Task: ops-web mock UI shell against ops-api](https://github.com/etai83/agentic_trading_orchestration/issues/29).
+## Dev
 
-Planned layout (from research + handoff):
+```bash
+# terminal 1 — API (repo root)
+make ops-api-dev
 
-- Next.js App Router
-- Dev rewrite: `/api/*` → `http://127.0.0.1:8000/*`
-- Client uses relative `/api` paths only
+# terminal 2 — web
+cd apps/ops-web && npm install && npm run dev
+```
+
+Open http://127.0.0.1:3000 — `/api/*` rewrites to `http://127.0.0.1:8000/api/*`.
+
+Routes: `/`, `/gates`, `/campaigns/:id`, `/campaigns/:id/experiments/:id`.

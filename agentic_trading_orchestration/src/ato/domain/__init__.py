@@ -1,0 +1,51 @@
+"""Phase 1 domain types and pure scoring."""
+
+from ato.domain.goal_scoring import FieldScore, GoalScore, score_against_goals
+from ato.domain.seed import PHASE1_SEED
+from ato.domain.types import (
+    VALID_CAMPAIGN_STATUSES,
+    VALID_GATE_REASONS,
+    VALID_GATE_STATUSES,
+    VALID_NEXT_ACTIONS,
+    VALID_THESIS_STATUSES,
+    VALID_VERDICTS,
+    BacktestResult,
+    Campaign,
+    CampaignConstraints,
+    Decision,
+    Experiment,
+    GoalVector,
+    HumanGate,
+    ResearchBrief,
+    SignalBlock,
+    StrategyConfig,
+    Thesis,
+    new_id,
+    utc_now,
+)
+
+__all__ = [
+    "BacktestResult",
+    "Campaign",
+    "CampaignConstraints",
+    "Decision",
+    "Experiment",
+    "FieldScore",
+    "GoalScore",
+    "GoalVector",
+    "HumanGate",
+    "PHASE1_SEED",
+    "ResearchBrief",
+    "SignalBlock",
+    "StrategyConfig",
+    "Thesis",
+    "VALID_CAMPAIGN_STATUSES",
+    "VALID_GATE_REASONS",
+    "VALID_GATE_STATUSES",
+    "VALID_NEXT_ACTIONS",
+    "VALID_THESIS_STATUSES",
+    "VALID_VERDICTS",
+    "score_against_goals",
+    "new_id",
+    "utc_now",
+]
