@@ -7,7 +7,9 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/api/:path*",
-        destination: "http://127.0.0.1:8000/api/:path*",
+        // Default 8001: host often has other services on :8000 (e.g. omlx).
+        // Override with OPS_API_PROXY when needed.
+        destination: `${process.env.OPS_API_PROXY || "http://127.0.0.1:8001"}/api/:path*`,
       },
     ];
   },

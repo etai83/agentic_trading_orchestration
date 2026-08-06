@@ -43,7 +43,7 @@ export type EngineEvent = {
 function apiBase(): string {
   // Browser: same-origin Next rewrites. Server components: hit API directly.
   if (typeof window === "undefined") {
-    return process.env.OPS_API_BASE || "http://127.0.0.1:8000";
+    return process.env.OPS_API_BASE || "http://127.0.0.1:8001";
   }
   return "";
 }

@@ -6,7 +6,7 @@ Next.js operator SPA for Phase 1 ATO.
 
 ```bash
 # terminal 1 — API (from agentic_trading_orchestration root)
-make ops-api-dev
+make ops-api-dev   # binds 127.0.0.1:8001 by default
 
 # terminal 2 — web (this directory)
 cd apps/ops-web
@@ -14,7 +14,9 @@ npm install
 npm run dev    # cleans .next then starts on 127.0.0.1:3000
 ```
 
-Open http://127.0.0.1:3000 — `/api/*` rewrites to `http://127.0.0.1:8000/api/*`.
+Open http://127.0.0.1:3000 — `/api/*` rewrites to **`http://127.0.0.1:8001`** (not 8000).
+
+**Port note:** many Mac setups already run something on `:8000` (e.g. omlx). Ops-api defaults to **8001**. If you change the API port, set `OPS_API_PROXY` when starting Next (see `next.config.ts`).
 
 Routes: `/`, `/gates`, `/campaigns/:id`, `/campaigns/:id/experiments/:id`.
 
