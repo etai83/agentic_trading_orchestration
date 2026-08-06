@@ -1,21 +1,38 @@
-import Link from "next/link";
-import { getCampaigns } from "@/lib/api";
+"use client";
 
-export default async function HomePage() {
-  let campaigns: Awaited<ReturnType<typeof getCampaigns>> = [];
-  let error: string | null = null;
-  try {
-    campaigns = await getCampaigns();
-  } catch (e) {
-    error = e instanceof Error ? e.message : "Failed to load campaigns";
-  }
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { Campaign, getCampaigns } from "@/lib/api";
+
+export default function HomePage() {
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getCampaigns()
+      .then(setCampaigns)
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load campaigns"))
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <div>
       <h1>Campaigns</h1>
-      <p className="muted">Operator home — Phase 1 thin-slice ops dashboard (mock/live via API).</p>
-      {error ? <div className="card">Error: {error}</div> : null}
-      {!error && campaigns.length === 0 ? (
+      <p className="muted">
+        Operator home — Phase 1 thin-slice ops dashboard (mock/live via API).
+      </p>
+      {loading ? <div className="muted">Loading…</div> : null}
+      {error ? (
+        <div className="card">
+          Error: {error}
+          <p className="muted" style={{ marginBottom: 0 }}>
+            Is ops-api running on 127.0.0.1:8000? From repo root:{" "}
+            <code>make ops-api-dev</code>
+          </p>
+        </div>
+      ) : null}
+      {!loading && !error && campaigns.length === 0 ? (
         <div className="empty">No campaigns yet</div>
       ) : null}
       {campaigns.map((c) => (

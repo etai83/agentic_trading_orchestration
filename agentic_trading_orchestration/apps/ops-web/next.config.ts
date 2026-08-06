@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Avoid stale RSC/webpack chunk mismatches after build↔dev switches.
+  reactStrictMode: true,
   async rewrites() {
     return [
       {
