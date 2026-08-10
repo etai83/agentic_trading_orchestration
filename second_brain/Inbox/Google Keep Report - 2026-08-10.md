@@ -23,10 +23,10 @@ source: Google Keep Export
 
 ---
 
-### 2. 🛸 Mesopotamian Human Origin & God Labor Theory
-- **Content**: Philosophical theory questioning why humans were created in Mesopotamian myth (taking over labor of the gods beyond primitive mining/farming).
-- **Worth Further Reading**: ==Yes (Medium Priority)==. Compelling ancient astronaut & mythic history hypothesis.
-- **How to Use**: File under `[[Ancient Civilizations Timeline]]` and cross-reference with Sumerian tablet translations.
+### 2. 🛸 Mesopotamian Human Origin & God Labor Theory (Terraforming Hypothesis)
+- **Content**: Deep philosophical theory questioning human origins: *"What if humans were never created simply to 'work for the gods'... What if the species itself was the tool? ... What if civilization itself was the labour... changing atmospheric chemistry until reaching conditions the creators were waiting for?"*
+- **Worth Further Reading**: ==Yes (High Priority)==. Compelling alternative interpretation of Mesopotamian myths, geo-engineering, and UAP disclosure timing.
+- **How to Use**: Create dedicated note `[[Terraforming & Human Origin Theory]]` and link to `[[Ancient Civilizations Timeline]]` and `[[UAP & Disclosure]]`.
 
 ---
 
