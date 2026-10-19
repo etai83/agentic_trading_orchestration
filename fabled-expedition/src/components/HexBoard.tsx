@@ -8,6 +8,7 @@ import {
   PendingActionSelection,
   AoePattern,
   StatusEffect,
+  HeroClassId,
 } from '../types/game';
 import {
   axialToPixel,
@@ -27,6 +28,28 @@ interface HexBoardProps {
 }
 
 const HEX_SIZE = 40;
+
+const HERO_EMBLEM: Record<HeroClassId, string> = {
+  vanguard: 'VG',
+  scavenger: 'SC',
+  lorekeeper: 'LK',
+  sentinel: 'ST',
+};
+
+const STATUS_GLYPH: Record<StatusEffect, string> = {
+  poison: 'P',
+  wound: 'W',
+  immobilize: 'I',
+  stun: '!',
+  muddle: '~',
+  strengthen: '+',
+};
+
+function enemyMark(name: string): string {
+  const words = name.replace(/^The\s+/i, '').split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return `${words[0][0]}${words[1][0]}`.toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
 
 export const HexBoard: React.FC<HexBoardProps> = ({
   gameState,
@@ -215,9 +238,9 @@ export const HexBoard: React.FC<HexBoardProps> = ({
         );
 
       case 'lore':
-        // Glowing cyan aether rune
+        // Glowing cyan aether rune. Spent nodes stay visible but dim.
         return (
-          <g>
+          <g opacity={tile.interacted ? 0.4 : 1}>
             <circle cx={cx} cy={cy} r="15" fill="none" stroke="#38bdf8" strokeWidth="1.5" strokeDasharray="4 2" />
             <polygon
               points={`${cx},${cy - 10} ${cx + 9},${cy + 6} ${cx - 9},${cy + 6}`}
@@ -231,7 +254,13 @@ export const HexBoard: React.FC<HexBoardProps> = ({
               stroke="#38bdf8"
               strokeWidth="1.5"
             />
-            <circle cx={cx} cy={cy} r="3" fill="#fff" />
+            {tile.interacted ? (
+              <text x={cx} y={cy + 3} textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="bold">
+                READ
+              </text>
+            ) : (
+              <circle cx={cx} cy={cy} r="3" fill="#fff" />
+            )}
           </g>
         );
 
@@ -278,8 +307,9 @@ export const HexBoard: React.FC<HexBoardProps> = ({
         {statuses.map((s, idx) => (
           <g key={s} transform={`translate(${startX + idx * (badgeSize + 3)}, ${badgeY})`}>
             <circle r={badgeSize / 2} fill={statusColors[s] || '#fff'} stroke="#000" strokeWidth="0.8" />
+            <title>{s}</title>
             <text textAnchor="middle" y="2.5" fontSize="6" fontWeight="bold" fill="#000">
-              {s[0].toUpperCase()}
+              {STATUS_GLYPH[s]}
             </text>
           </g>
         ))}
@@ -305,6 +335,7 @@ export const HexBoard: React.FC<HexBoardProps> = ({
         style={{ cursor: 'pointer' }}
         onClick={() => onTileClick({ q: hero.q, r: hero.r })}
       >
+        <title>{`${hero.name} ${hero.hp}/${hero.maxHp}`}</title>
         {/* Animated Golden Ring for Active Unit */}
         {isActive && (
           <circle
@@ -334,7 +365,7 @@ export const HexBoard: React.FC<HexBoardProps> = ({
           fontFamily="var(--font-family)"
           style={{ textShadow: '0 1px 3px rgba(0,0,0,0.9)' }}
         >
-          {hero.name.slice(0, 2).toUpperCase()}
+          {HERO_EMBLEM[hero.classId]}
         </text>
 
         {/* Shield Badge */}
@@ -407,17 +438,23 @@ export const HexBoard: React.FC<HexBoardProps> = ({
         style={{ cursor: 'pointer' }}
         onClick={() => onTileClick({ q: enemy.q, r: enemy.r })}
       >
+        <title>{`${enemy.name} ${enemy.hp}/${enemy.maxHp}`}</title>
         {/* Animated Golden Ring if currently active enemy group */}
         {isActive && (
           <circle
             r={enemy.isBoss ? 28 : 22}
             fill="none"
-            stroke="#f59e0b"
+            stroke="#fbbf24"
             strokeWidth="2.5"
             strokeDasharray="4 2"
             opacity="0.9"
           >
-            <animate attributeName="r" values="21;24;21" dur="1.8s" repeatCount="indefinite" />
+            <animate
+              attributeName="r"
+              values={enemy.isBoss ? '27;30;27' : '21;24;21'}
+              dur="1.8s"
+              repeatCount="indefinite"
+            />
           </circle>
         )}
 
@@ -455,7 +492,7 @@ export const HexBoard: React.FC<HexBoardProps> = ({
           fontFamily="var(--font-family)"
           style={{ textShadow: '0 1px 3px rgba(0,0,0,0.9)' }}
         >
-          {enemy.isBoss ? '👑' : enemy.name.slice(0, 2).toUpperCase()}
+          {enemy.isBoss ? '👑' : enemy.isObjectiveStructure ? '◎' : enemyMark(enemy.name)}
         </text>
 
         {/* Shield Badge */}

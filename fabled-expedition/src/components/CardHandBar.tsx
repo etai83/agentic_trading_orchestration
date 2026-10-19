@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import {
   GameState,
-  HeroUnitState,
   AbilityCard,
+  AbilityHalf,
   PendingActionSelection,
   ElementType,
 } from '../types/game';
@@ -40,6 +40,7 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
   onSkipOrEndTurn,
 }) => {
   const [activePileTab, setActivePileTab] = useState<'hand' | 'discard' | 'lost'>('hand');
+  const [infuseChoice, setInfuseChoice] = useState<ElementType>('aether');
 
   // Currently inspected hero in planning phase
   const inspectedHero =
@@ -75,7 +76,7 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
       >
         {/* Selection Indicators */}
         {isSelectedLead && (
-          <div className="selection-overlay-label">1st: LEAD (INIT {card.initiative})</div>
+          <div className="selection-overlay-label">Lead [{card.initiative}]</div>
         )}
         {isSelectedSecond && (
           <div className="selection-overlay-label second">2nd CARD</div>
@@ -121,16 +122,43 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
     );
   };
 
+  const elementReady = (element: ElementType) => {
+    const infusion = gameState.elements[element];
+    return infusion === 'strong' || infusion === 'waning';
+  };
+
+  const armAction = (
+    heroId: string,
+    cardId: string,
+    half: 'top' | 'bottom',
+    useBasicInstead: boolean,
+    alreadyArmed: boolean
+  ) => {
+    onSetPendingAction(
+      alreadyArmed
+        ? null
+        : {
+            heroId,
+            cardId,
+            half,
+            useBasicInstead,
+            consumeElement: false,
+          }
+    );
+  };
+
   // -------------------------------------------------------------
   // RENDER PLANNING PHASE BAR
   // -------------------------------------------------------------
+  if (!inspectedHero) return null;
+
   if (!isExecutionPhase) {
     const readyToLock = canLockInRound(gameState);
 
     return (
       <div className="card-hand-bar">
         {/* Header: Hero Tabs + Piles + Action Buttons */}
-        <div className="hand-bar-header">
+        <div className="hand-bar-header" style={{ flexWrap: 'wrap', rowGap: 8 }}>
           {/* Hero Tabs */}
           <div className="hero-selector-tabs">
             {gameState.heroes.map((hero) => {
@@ -187,11 +215,14 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
           </div>
 
           {/* Planning Action Buttons */}
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             <button
               className="btn btn-bronze"
               onClick={() => onToggleLongRest(inspectedHero.id)}
-              disabled={inspectedHero.discard.length < 2 || inspectedHero.exhausted}
+              disabled={
+                inspectedHero.exhausted ||
+                (!inspectedHero.longRestDeclared && inspectedHero.discard.length < 2)
+              }
               title="Declare Long Rest (Initiative 99, heal 2, lose 1 discard)"
             >
               {inspectedHero.longRestDeclared ? 'Cancel Long Rest' : '💤 Long Rest'}
@@ -199,17 +230,17 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
             <button
               className="btn"
               onClick={() => onShortRest(inspectedHero.id)}
-              disabled={inspectedHero.discard.length < 2 || inspectedHero.exhausted}
-              title="Short Rest: lose 1 random discard card, return rest to hand"
+              disabled={inspectedHero.discard.length < 1 || inspectedHero.exhausted}
+              title="Short Rest: lose 1 random discarded card and return the rest to hand"
             >
               ⚡ Short Rest
             </button>
             <button
               className="btn btn-accent"
               onClick={onQuickAutoSelect}
-              title="Automatically pick 2 cards for all unselected heroes"
+              title="Automatically pick 2 cards for every hero who still needs them"
             >
-              ✨ Quick Auto-Select
+              ✨ Quick Auto-Select Cards
             </button>
             <button
               className="btn btn-bronze"
@@ -222,7 +253,7 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
               onClick={onLockInRound}
               disabled={!readyToLock}
             >
-              🔒 Lock In & Reveal
+              🔒 Lock In Cards & Begin Round
             </button>
           </div>
         </div>
@@ -270,10 +301,43 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
         .map((cid) => activeHero.hand.find((c) => c.id === cid))
         .filter(Boolean) as AbilityCard[])
     : [];
+  const immobilized = activeHero.statuses.includes('immobilize');
+
+  const renderConsume = (card: AbilityCard, half: 'top' | 'bottom', halfDef: AbilityHalf, used: boolean) => {
+    if (!halfDef.consume) return null;
+    const ready = elementReady(halfDef.consume.element);
+    const armed =
+      pendingAction?.cardId === card.id &&
+      pendingAction.half === half &&
+      !pendingAction.useBasicInstead;
+    return (
+      <label className="consume-toggle-label" style={{ opacity: ready ? 1 : 0.45 }}>
+        <input
+          type="checkbox"
+          disabled={!ready || used}
+          checked={Boolean(armed && pendingAction?.consumeElement && ready)}
+          onChange={(event) => {
+            if (!ready || used) return;
+            onSetPendingAction({
+              heroId: activeHero.id,
+              cardId: card.id,
+              half,
+              useBasicInstead: false,
+              consumeElement: event.target.checked,
+            });
+          }}
+        />
+        <span>
+          Consume {halfDef.consume.element}
+          {ready ? ` (${halfDef.consume.bonusDescription})` : ' (inert)'}
+        </span>
+      </label>
+    );
+  };
 
   return (
-    <div className="card-hand-bar">
-      <div className="execution-controls-bar">
+    <div className="card-hand-bar" style={{ maxHeight: 360, overflowY: 'auto' }}>
+      <div className="execution-controls-bar" style={{ height: 'auto', alignItems: 'flex-start' }}>
         {/* Active Hero Summary */}
         <div className="active-hero-summary">
           <div className="active-hero-name">
@@ -284,6 +348,9 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
               ❤️ HP: {activeHero.hp} / {activeHero.maxHp}
             </span>
             <span>🛡️ Shield: {activeHero.shield}</span>
+            {activeHero.statuses.length > 0 && (
+              <span>Status: {activeHero.statuses.join(', ')}</span>
+            )}
             <span>
               Actions Used:{' '}
               {activeHero.topUsedThisTurn && activeHero.bottomUsedThisTurn
@@ -301,17 +368,44 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
             {activeHero.equippedRelics.map((rel) => {
               const item = RELIC_BY_ID[rel.relicId];
               if (!item) return null;
+              const choosesElement = item.effect === 'infuse_any';
               return (
-                <button
-                  key={rel.relicId}
-                  className="btn"
-                  style={{ fontSize: '10px', padding: '2px 6px' }}
-                  disabled={rel.used}
-                  onClick={() => onUseRelic(activeHero.id, rel.relicId)}
-                  title={item.description}
-                >
-                  🎒 {item.name} {rel.used ? '(Used)' : ''}
-                </button>
+                <span key={rel.relicId} style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                  {choosesElement && !rel.used && (
+                    <select
+                      value={infuseChoice}
+                      aria-label={`Element for ${item.name}`}
+                      onChange={(event) => setInfuseChoice(event.target.value as ElementType)}
+                      style={{
+                        background: '#0d131a',
+                        color: '#f1f5f9',
+                        border: '1px solid #233140',
+                        borderRadius: 4,
+                        fontSize: 10,
+                      }}
+                    >
+                      <option value="steam">Steam</option>
+                      <option value="volt">Volt</option>
+                      <option value="aether">Aether</option>
+                      <option value="mire">Mire</option>
+                    </select>
+                  )}
+                  <button
+                    className="btn"
+                    style={{ fontSize: '10px', padding: '2px 6px' }}
+                    disabled={rel.used}
+                    onClick={() =>
+                      onUseRelic(
+                        activeHero.id,
+                        rel.relicId,
+                        choosesElement ? infuseChoice : undefined
+                      )
+                    }
+                    title={item.description}
+                  >
+                    🎒 {item.name} {rel.used ? '(Used)' : ''}
+                  </button>
+                </span>
               );
             })}
           </div>
@@ -320,7 +414,7 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
         {/* Selected Cards Action Boxes */}
         <div className="execution-cards-container">
           {selectedCardObjects.length > 0 ? (
-            selectedCardObjects.map((card) => {
+            selectedCardObjects.map((card, cardIndex) => {
               const isTopPending =
                 pendingAction?.cardId === card.id &&
                 pendingAction?.half === 'top' &&
@@ -342,7 +436,9 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
               return (
                 <div key={card.id} className="execution-card-box">
                   <div className="exec-card-title">
-                    <span>{card.name}</span>
+                    <span>
+                      {cardIndex === 0 ? 'Lead' : 'Second'}: {card.name}
+                    </span>
                     <span style={{ color: '#fbbf24' }}>Init {card.initiative}</span>
                   </div>
 
@@ -354,64 +450,37 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
                     <div style={{ fontSize: '10px', color: '#94a3b8' }}>
                       {card.top.description}
                     </div>
-                    <div className="action-button-row">
+                    <div className="action-button-row" style={{ flexWrap: 'wrap' }}>
                       <button
                         className={`btn ${isTopPending ? 'btn-accent' : ''}`}
-                        disabled={activeHero.topUsedThisTurn}
+                        disabled={
+                          activeHero.topUsedThisTurn ||
+                          (immobilized && card.top.type === 'move')
+                        }
+                        title={
+                          immobilized && card.top.type === 'move'
+                            ? 'Immobilized — cannot move'
+                            : 'Click again to cancel targeting'
+                        }
                         onClick={() =>
-                          onSetPendingAction({
-                            heroId: activeHero.id,
-                            cardId: card.id,
-                            half: 'top',
-                            useBasicInstead: false,
-                            consumeElement: false,
-                          })
+                          armAction(activeHero.id, card.id, 'top', false, isTopPending)
                         }
                       >
-                        Execute Top
+                        Top Action
                       </button>
                       <button
                         className={`btn ${isBasicTopPending ? 'btn-accent' : ''}`}
                         disabled={activeHero.topUsedThisTurn}
                         onClick={() =>
-                          onSetPendingAction({
-                            heroId: activeHero.id,
-                            cardId: card.id,
-                            half: 'top',
-                            useBasicInstead: true,
-                            consumeElement: false,
-                          })
+                          armAction(activeHero.id, card.id, 'top', true, isBasicTopPending)
                         }
-                        title="Basic Attack 2 (Range 1 Melee)"
+                        title="Basic Attack 2 (Range 1 Melee). Click again to cancel."
                       >
                         Basic Attack 2
                       </button>
                     </div>
 
-                    {/* Consume Element Toggle */}
-                    {card.top.consume && (
-                      <label className="consume-toggle-label">
-                        <input
-                          type="checkbox"
-                          checked={
-                            pendingAction?.cardId === card.id &&
-                            pendingAction?.half === 'top' &&
-                            pendingAction.consumeElement
-                          }
-                          onChange={(e) => {
-                            if (isTopPending) {
-                              onSetPendingAction({
-                                ...pendingAction,
-                                consumeElement: e.target.checked,
-                              });
-                            }
-                          }}
-                        />
-                        <span>
-                          Consume {card.top.consume.element} ({card.top.consume.bonusDescription})
-                        </span>
-                      </label>
-                    )}
+                    {renderConsume(card, 'top', card.top, activeHero.topUsedThisTurn)}
                   </div>
 
                   {/* Bottom Action Selection */}
@@ -429,65 +498,37 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
                     <div style={{ fontSize: '10px', color: '#94a3b8' }}>
                       {card.bottom.description}
                     </div>
-                    <div className="action-button-row">
+                    <div className="action-button-row" style={{ flexWrap: 'wrap' }}>
                       <button
                         className={`btn ${isBottomPending ? 'btn-accent' : ''}`}
-                        disabled={activeHero.bottomUsedThisTurn}
+                        disabled={
+                          activeHero.bottomUsedThisTurn ||
+                          (immobilized && card.bottom.type === 'move')
+                        }
+                        title={
+                          immobilized && card.bottom.type === 'move'
+                            ? 'Immobilized — cannot move'
+                            : 'Click again to cancel targeting'
+                        }
                         onClick={() =>
-                          onSetPendingAction({
-                            heroId: activeHero.id,
-                            cardId: card.id,
-                            half: 'bottom',
-                            useBasicInstead: false,
-                            consumeElement: false,
-                          })
+                          armAction(activeHero.id, card.id, 'bottom', false, isBottomPending)
                         }
                       >
-                        Execute Bottom
+                        Bottom Action
                       </button>
                       <button
                         className={`btn ${isBasicBottomPending ? 'btn-accent' : ''}`}
-                        disabled={activeHero.bottomUsedThisTurn}
+                        disabled={activeHero.bottomUsedThisTurn || immobilized}
                         onClick={() =>
-                          onSetPendingAction({
-                            heroId: activeHero.id,
-                            cardId: card.id,
-                            half: 'bottom',
-                            useBasicInstead: true,
-                            consumeElement: false,
-                          })
+                          armAction(activeHero.id, card.id, 'bottom', true, isBasicBottomPending)
                         }
-                        title="Basic Move 2"
+                        title={immobilized ? 'Immobilized — cannot move' : 'Basic Move 2. Click again to cancel.'}
                       >
                         Basic Move 2
                       </button>
                     </div>
 
-                    {/* Consume Element Toggle */}
-                    {card.bottom.consume && (
-                      <label className="consume-toggle-label">
-                        <input
-                          type="checkbox"
-                          checked={
-                            pendingAction?.cardId === card.id &&
-                            pendingAction?.half === 'bottom' &&
-                            pendingAction.consumeElement
-                          }
-                          onChange={(e) => {
-                            if (isBottomPending) {
-                              onSetPendingAction({
-                                ...pendingAction,
-                                consumeElement: e.target.checked,
-                              });
-                            }
-                          }}
-                        />
-                        <span>
-                          Consume {card.bottom.consume.element} (
-                          {card.bottom.consume.bonusDescription})
-                        </span>
-                      </label>
-                    )}
+                    {renderConsume(card, 'bottom', card.bottom, activeHero.bottomUsedThisTurn)}
                   </div>
                 </div>
               );
@@ -500,6 +541,12 @@ export const CardHandBar: React.FC<CardHandBarProps> = ({
             </div>
           )}
         </div>
+
+        {pendingAction && pendingAction.heroId === activeHero.id && (
+          <div style={{ fontSize: 11, color: '#38bdf8', alignSelf: 'center' }}>
+            Click a highlighted hex. Click the armed action again to cancel.
+          </div>
+        )}
 
         {/* End Turn Button */}
         <div>

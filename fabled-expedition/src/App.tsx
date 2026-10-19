@@ -4,6 +4,7 @@ import {
   HexCoord,
   PendingActionSelection,
   ElementType,
+  ModifierCard,
 } from './types/game';
 import {
   createInitialCampaignState,
@@ -29,11 +30,39 @@ import { CardHandBar } from './components/CardHandBar';
 import { LoreModal } from './components/LoreModal';
 import { OutpostView } from './components/OutpostView';
 
+function elementIsInfused(state: ElementType | undefined, elements: GameState['elements']): boolean {
+  if (!state) return false;
+  const infusion = elements[state];
+  return infusion === 'strong' || infusion === 'waning';
+}
+
+/** Pending selection that belongs to the active hero, with an illegal consume stripped. */
+function legalPending(state: GameState): PendingActionSelection | null {
+  const pending = state.pendingAction;
+  if (!pending || state.phase !== 'PHASE_TURN_EXECUTION') return null;
+  const active = state.turnOrder[state.activeTurnIndex];
+  if (!active?.isHero || active.heroId !== pending.heroId) return null;
+  if (!pending.consumeElement || pending.useBasicInstead) return pending;
+
+  const hero = state.heroes.find((h) => h.id === pending.heroId);
+  const card = hero?.hand.find((c) => c.id === pending.cardId);
+  const element = card?.[pending.half]?.consume?.element;
+  if (elementIsInfused(element, state.elements)) return pending;
+  return { ...pending, consumeElement: false };
+}
+
+function modifierFace(card: ModifierCard): string {
+  if (card.multiplier === 2) return '[2x CRIT!]';
+  if (card.multiplier === 0) return '[0x NULL]';
+  return `[${card.label}]`;
+}
+
 export const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(() => createInitialCampaignState());
   const [selectedHeroId, setSelectedHeroId] = useState<string>(
     () => gameState.heroes[0]?.id || 'vanguard'
   );
+  const [hiddenModifierStamp, setHiddenModifierStamp] = useState<number | null>(null);
   const combatLogEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll combat log
@@ -51,25 +80,37 @@ export const App: React.FC = () => {
     }
   }, [gameState.phase, gameState.activeTurnIndex, gameState.turnOrder]);
 
-  // Calculate valid target hexes for currently pending hero action
+  const pendingAction = useMemo(() => legalPending(gameState), [gameState]);
+
+  // Highlights follow the legal pending action, so a stale or inert consume cannot grant range.
   const validTargets = useMemo<HexCoord[]>(() => {
-    if (!gameState.pendingAction) return [];
-    return getValidTargetHexes(gameState, gameState.pendingAction);
-  }, [gameState.pendingAction, gameState]);
+    if (!pendingAction) return [];
+    return getValidTargetHexes(gameState, pendingAction);
+  }, [gameState, pendingAction]);
+
+  useEffect(() => {
+    const popup = gameState.lastModifierPopup;
+    if (!popup) return;
+    const stamp = popup.timestamp;
+    const timer = window.setTimeout(() => setHiddenModifierStamp(stamp), 4500);
+    return () => window.clearTimeout(timer);
+  }, [gameState.lastModifierPopup]);
 
   // -------------------------------------------------------------
   // GAME ACTION HANDLERS
   // -------------------------------------------------------------
 
   const handleTileClick = (coord: HexCoord) => {
-    if (!gameState.pendingAction) return;
-
-    // Check if clicked tile is a valid target
-    const isValid = validTargets.some((vt) => vt.q === coord.q && vt.r === coord.r);
-    if (!isValid) return;
-
-    const nextState = executeHeroActionOnHex(gameState, coord);
-    setGameState(nextState);
+    setGameState((prev) => {
+      const pending = legalPending(prev);
+      if (!pending) return prev;
+      const armed = pending === prev.pendingAction ? prev : { ...prev, pendingAction: pending };
+      const isValid = getValidTargetHexes(armed, pending).some(
+        (vt) => vt.q === coord.q && vt.r === coord.r
+      );
+      if (!isValid) return prev;
+      return executeHeroActionOnHex(armed, coord);
+    });
   };
 
   const handleToggleSelectCard = (heroId: string, cardId: string) => {
@@ -88,21 +129,35 @@ export const App: React.FC = () => {
     setGameState((prev) => lockInRoundAndReveal(prev));
   };
 
-  // Quick auto-select cards for all unselected heroes
+  // Fill each hero up to 2 cards. Toggling the first two hand cards deselects a card
+  // that was already chosen and can leave the hero on a single card.
   const handleQuickAutoSelect = () => {
-    let nextState = { ...gameState };
-    for (const hero of nextState.heroes) {
-      if (hero.exhausted || hero.longRestDeclared) continue;
-      const selectedCount = hero.selectedCards ? hero.selectedCards.filter(Boolean).length : 0;
-      if (selectedCount < 2 && hero.hand.length >= 2) {
-        // Toggle first 2 cards in hand
-        const card1 = hero.hand[0];
-        const card2 = hero.hand[1];
-        nextState = toggleSelectCard(nextState, hero.id, card1.id);
-        nextState = toggleSelectCard(nextState, hero.id, card2.id);
+    setGameState((prev) => {
+      let next = prev;
+      for (const heroId of prev.heroes.map((hero) => hero.id)) {
+        let hero = next.heroes.find((h) => h.id === heroId);
+        if (!hero || hero.exhausted || hero.longRestDeclared) continue;
+
+        const selectedInHand = (current: NonNullable<typeof hero>) =>
+          new Set(
+            (current.selectedCards ?? []).filter(
+              (id) => id && current.hand.some((card) => card.id === id)
+            )
+          );
+
+        if (selectedInHand(hero).size >= 2) continue;
+
+        for (const card of hero.hand) {
+          hero = next.heroes.find((h) => h.id === heroId);
+          if (!hero) break;
+          const selected = selectedInHand(hero);
+          if (selected.size >= 2) break;
+          if (selected.has(card.id)) continue;
+          next = toggleSelectCard(next, heroId, card.id);
+        }
       }
-    }
-    setGameState(nextState);
+      return next;
+    });
   };
 
   const handleSetPendingAction = (pending: PendingActionSelection | null) => {
@@ -110,7 +165,7 @@ export const App: React.FC = () => {
   };
 
   const handleSkipOrEndTurn = () => {
-    setGameState((prev) => skipOrEndActiveTurn(prev));
+    setGameState((prev) => setPendingHeroAction(skipOrEndActiveTurn(prev), null));
   };
 
   const handleUseRelic = (heroId: string, relicId: string, element?: ElementType) => {
@@ -164,7 +219,7 @@ export const App: React.FC = () => {
                 gameState={gameState}
                 onTileClick={handleTileClick}
                 validTargets={validTargets}
-                pendingAction={gameState.pendingAction}
+                pendingAction={pendingAction}
               />
 
               {/* Bottom Card Hand & Action Bar */}
@@ -178,7 +233,7 @@ export const App: React.FC = () => {
                 onLockInRound={handleLockInRound}
                 onQuickAutoSelect={handleQuickAutoSelect}
                 onSetPendingAction={handleSetPendingAction}
-                pendingAction={gameState.pendingAction}
+                pendingAction={pendingAction}
                 onUseRelic={handleUseRelic}
                 onSkipOrEndTurn={handleSkipOrEndTurn}
               />
@@ -194,14 +249,20 @@ export const App: React.FC = () => {
               </div>
               <div className="combat-log-list">
                 {gameState.combatLog.map((log, index) => {
+                  const lower = log.toLowerCase();
                   let logClass = 'combat-log-entry';
-                  if (log.includes('attacks') || log.includes('Damage') || log.includes('CRITICAL')) {
+                  if (
+                    lower.includes('attack') ||
+                    lower.includes('damage') ||
+                    lower.includes('critical') ||
+                    lower.includes('defeated')
+                  ) {
                     logClass += ' attack';
-                  } else if (log.includes('heals') || log.includes('Bless')) {
+                  } else if (lower.includes('heal') || lower.includes('bless')) {
                     logClass += ' heal';
-                  } else if (log.includes('breaches Door') || log.includes('Room')) {
+                  } else if (lower.includes('door') || lower.includes('room')) {
                     logClass += ' room';
-                  } else if (log.includes('Lore Node')) {
+                  } else if (lower.includes('lore') || lower.includes('pylon')) {
                     logClass += ' lore';
                   }
                   return (
@@ -216,22 +277,25 @@ export const App: React.FC = () => {
           </div>
 
           {/* Attack Modifier Card Draw Popup Banner */}
-          {gameState.lastModifierPopup && (
+          {gameState.lastModifierPopup &&
+            gameState.lastModifierPopup.timestamp !== hiddenModifierStamp && (
             <div className="modifier-popup-banner">
-              <div
-                className={`modifier-card-drawn ${
-                  gameState.lastModifierPopup.result.chosenCard.multiplier === 2
-                    ? 'crit'
-                    : gameState.lastModifierPopup.result.chosenCard.multiplier === 0
-                    ? 'null'
-                    : ''
-                }`}
-              >
-                {gameState.lastModifierPopup.result.chosenCard.multiplier === 2
-                  ? '2x CRIT!'
-                  : gameState.lastModifierPopup.result.chosenCard.multiplier === 0
-                  ? '0x NULL'
-                  : gameState.lastModifierPopup.result.chosenCard.label}
+              <div style={{ display: 'flex', gap: '6px' }}>
+                {gameState.lastModifierPopup.result.drawnCards.map((card, index) => {
+                  const chosen = card === gameState.lastModifierPopup?.result.chosenCard;
+                  return (
+                    <div
+                      key={`${card.id}-${index}`}
+                      className={`modifier-card-drawn ${
+                        card.multiplier === 2 ? 'crit' : card.multiplier === 0 ? 'null' : ''
+                      }`}
+                      style={{ opacity: chosen ? 1 : 0.45 }}
+                      title={chosen ? 'Chosen card' : 'Drawn and discarded'}
+                    >
+                      {modifierFace(card)}
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="modifier-details">
@@ -239,7 +303,7 @@ export const App: React.FC = () => {
                   Target: {gameState.lastModifierPopup.targetName}
                 </span>
                 <span className="modifier-damage-total">
-                  Dealt {gameState.lastModifierPopup.result.finalDamage} Damage
+                  Modifier total {gameState.lastModifierPopup.result.finalDamage}
                 </span>
               </div>
 
@@ -248,6 +312,14 @@ export const App: React.FC = () => {
                   {gameState.lastModifierPopup.result.mode}
                 </span>
               )}
+              <button
+                className="btn"
+                style={{ padding: '2px 8px' }}
+                onClick={() => setHiddenModifierStamp(gameState.lastModifierPopup?.timestamp ?? null)}
+                aria-label="Dismiss modifier draw"
+              >
+                ×
+              </button>
             </div>
           )}
 

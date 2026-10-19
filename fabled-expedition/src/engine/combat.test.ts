@@ -935,7 +935,10 @@ describe('Tactical Combat Engine (combat.ts)', () => {
       const hero = state.heroes[0];
       state.enemies[0].q = 1;
       state.enemies[0].r = 0;
-      const initialEnemyHp = state.enemies[0].hp;
+      const originalEnemy = state.enemies[0];
+      const initialEnemyHp = originalEnemy.hp;
+      state.heroModifierDeck = [{ id: 'fixed0', label: '+0', delta: 0 }];
+      state.heroModifierDiscard = [];
 
       state = setPendingHeroAction(state, {
         heroId: hero.id,
@@ -946,7 +949,8 @@ describe('Tactical Combat Engine (combat.ts)', () => {
       });
 
       state = executeHeroActionOnHex(state, { q: 1, r: 0 });
-      expect(state.enemies[0].hp).toBeLessThan(initialEnemyHp);
+      expect(state.enemies[0].hp).toBe(initialEnemyHp - 3);
+      expect(originalEnemy.hp).toBe(initialEnemyHp);
       expect(state.elements.steam).toBe('strong');
       expect(state.heroes[0].topUsedThisTurn).toBe(true);
     });
@@ -1031,6 +1035,487 @@ describe('Tactical Combat Engine (combat.ts)', () => {
       expect(state.tiles).toHaveLength(0);
       expect(state.enemies).toHaveLength(0);
       expect(state.completedScenarioIds).toContain('sunken_lock');
+    });
+
+    it('unlockHeroPerkInOutpost removes two -1 modifier cards', () => {
+      let state = createInitialCampaignState();
+      state.heroes[0].xp = 18;
+      const minusOnes = (cards: { delta: number; multiplier?: number }[]) =>
+        cards.filter((card) => card.delta === -1 && card.multiplier === undefined).length;
+      const before = minusOnes(state.heroModifierDeck) + minusOnes(state.heroModifierDiscard);
+
+      state = unlockHeroPerkInOutpost(state, state.heroes[0].id);
+      const after = minusOnes(state.heroModifierDeck) + minusOnes(state.heroModifierDiscard);
+      expect(before - after).toBe(2);
+    });
+  });
+
+  describe('10. Combat edge cases', () => {
+    it('reshuffles the deck when a shuffle card is drawn and removes temporary cards', () => {
+      const crit = { id: 'crit', label: '2x', delta: 0, multiplier: 2, shuffleAtEnd: true };
+      const bless = { id: 'bless', label: 'Bless', delta: 0, multiplier: 2, temporary: true, shuffleAtEnd: true };
+      const plus = { id: 'plus', label: '+1', delta: 1 };
+      const drawn = drawModifier([crit, bless], [plus], 4, 'advantage');
+      expect(drawn.result.finalDamage).toBe(8);
+      expect(drawn.nextDiscard).toHaveLength(0);
+      expect(drawn.nextDeck.map((card) => card.id).sort()).toEqual(['crit', 'plus']);
+    });
+
+    it('does not let poison bypass shield or turn a miss into damage', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      const enemy = state.enemies[0];
+      enemy.q = 1;
+      enemy.r = 0;
+      enemy.hp = 10;
+      enemy.baseShield = 5;
+      enemy.statuses = ['poison'];
+      state.heroModifierDeck = [{ id: 'zero', label: '+0', delta: 0 }];
+      state.heroModifierDiscard = [];
+
+      state = setPendingHeroAction(state, {
+        heroId: hero.id,
+        cardId: hero.hand[0].id,
+        half: 'top',
+        useBasicInstead: false,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: 1, r: 0 });
+      expect(state.enemies[0].hp).toBe(10);
+
+      state.enemies[0].baseShield = 0;
+      state.heroModifierDeck = [{ id: 'null', label: '0x', delta: 0, multiplier: 0, shuffleAtEnd: true }];
+      state.heroModifierDiscard = [];
+      state.heroes[0].topUsedThisTurn = false;
+      state = setPendingHeroAction(state, {
+        heroId: state.heroes[0].id,
+        cardId: state.heroes[0].hand[0].id,
+        half: 'top',
+        useBasicInstead: true,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: 1, r: 0 });
+      expect(state.enemies[0].hp).toBe(10);
+    });
+
+    it('pushes an enemy away and applies hazardous terrain on the destination', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      const source = hero.hand[0];
+      hero.hand = [{ ...source, top: { ...source.top, push: 1, infuse: undefined } }, ...hero.hand.slice(1)];
+      state.enemies[0].q = 1;
+      state.enemies[0].r = 0;
+      state.enemies[0].hp = 20;
+      state.enemies[0].baseShield = 0;
+      state.heroModifierDeck = [{ id: 'zero', label: '+0', delta: 0 }];
+      state.heroModifierDiscard = [];
+
+      state = setPendingHeroAction(state, {
+        heroId: hero.id,
+        cardId: hero.hand[0].id,
+        half: 'top',
+        useBasicInstead: false,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: 1, r: 0 });
+      const enemy = state.enemies.find((candidate) => candidate.id === state.enemies[0].id);
+      expect(state.enemies[0].q).toBe(2);
+      expect(state.enemies[0].r).toBe(0);
+      expect(enemy?.hp).toBe(15);
+    });
+
+    it('heals the acting hero when the heal target is their own hex', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[2];
+      hero.hp = 2;
+      hero.statuses = ['poison'];
+
+      state = setPendingHeroAction(state, {
+        heroId: hero.id,
+        cardId: hero.hand[0].id,
+        half: 'bottom',
+        useBasicInstead: false,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: hero.q, r: hero.r });
+      const updated = state.heroes.find((candidate) => candidate.id === hero.id);
+      expect(updated?.hp).toBe(4);
+      expect(updated?.statuses).not.toContain('poison');
+    });
+
+    it('resolves a long rest once when the round then ends', () => {
+      // Wound ticks at the start of the turn, then the rest heals 2 and cleanses it.
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      hero.hp = 4;
+      hero.longRestDeclared = true;
+      hero.statuses = ['poison', 'wound'];
+      hero.discard = [hero.hand[0], hero.hand[1]];
+      hero.hand = hero.hand.slice(2);
+      state.phase = 'PHASE_TURN_EXECUTION';
+      state.turnOrder = [
+        { id: hero.id, isHero: true, heroId: hero.id, name: hero.name, initiative: 99, acted: false },
+      ];
+      state.activeTurnIndex = 0;
+
+      state = skipOrEndActiveTurn(state);
+      const updated = state.heroes[0];
+      expect(updated.hp).toBe(5);
+      expect(updated.statuses).not.toContain('poison');
+      expect(updated.statuses).not.toContain('wound');
+      expect(updated.lost).toHaveLength(1);
+      expect(updated.longRestDeclared).toBe(false);
+    });
+
+    it('does not award victory while a later room is still sealed', () => {
+      let state = createInitialCampaignState();
+      state.enemies = state.enemies.map((enemy) => ({ ...enemy, hp: 0 }));
+      state.chestLootedInScenario = true;
+      state.phase = 'PHASE_TURN_EXECUTION';
+      const hero = state.heroes[0];
+      state.turnOrder = [
+        { id: hero.id, isHero: true, heroId: hero.id, name: hero.name, initiative: 10, acted: false },
+      ];
+      state.activeTurnIndex = 0;
+      state.heroes[0].selectedCards = null;
+
+      state = skipOrEndActiveTurn(state);
+      expect(state.phase).not.toBe('PHASE_SCENARIO_VICTORY');
+    });
+
+    it('ignores consume when the element is inert and applies it when the element is waning', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      const source = hero.hand[0];
+      hero.hand = [
+        {
+          ...source,
+          top: {
+            ...source.top,
+            infuse: 'steam',
+            consume: {
+              element: 'volt',
+              bonusDescription: '+10 Attack',
+              bonusAttack: 10,
+            },
+          },
+        },
+        ...hero.hand.slice(1),
+      ];
+      state.enemies[0].q = 1;
+      state.enemies[0].r = 0;
+      state.enemies[0].hp = 30;
+      state.enemies[0].baseShield = 0;
+      state.elements.volt = 'inert';
+      state.heroModifierDeck = [{ id: 'zero', label: '+0', delta: 0 }, { id: 'zero2', label: '+0', delta: 0 }];
+      state.heroModifierDiscard = [];
+
+      state = setPendingHeroAction(state, {
+        heroId: hero.id,
+        cardId: hero.hand[0].id,
+        half: 'top',
+        useBasicInstead: false,
+        consumeElement: true,
+      });
+      state = executeHeroActionOnHex(state, { q: 1, r: 0 });
+      expect(state.enemies[0].hp).toBe(27);
+      expect(state.elements.volt).toBe('inert');
+
+      state.heroes[0].topUsedThisTurn = false;
+      state.heroes[0].hand = [
+        state.heroes[0].discard.find((card) => card.id === source.id) || state.heroes[0].hand[0],
+        ...state.heroes[0].hand,
+      ];
+      state.elements.volt = 'waning';
+      state.heroModifierDeck = [{ id: 'zero', label: '+0', delta: 0 }];
+      state = setPendingHeroAction(state, {
+        heroId: state.heroes[0].id,
+        cardId: source.id,
+        half: 'top',
+        useBasicInstead: false,
+        consumeElement: true,
+      });
+      state = executeHeroActionOnHex(state, { q: 1, r: 0 });
+      expect(state.enemies[0].hp).toBe(14);
+      expect(state.elements.volt).toBe('inert');
+    });
+
+    it('holds a lore spawn until the sealed room is opened', () => {
+      let state = createInitialCampaignState();
+      const base = mockScenario1.loreNodes.sluice_valve;
+      state.activeLoreModal = {
+        loreNode: {
+          ...base,
+          options: [
+            { ...base.options[0], spawnEnemyInRoom: { roomId: 2, enemyType: 'drowned_construct', q: 7, r: 4 } },
+            base.options[1],
+          ],
+        },
+        heroId: state.heroes[0].id,
+        tileCoord: { q: 3, r: 1 },
+      };
+
+      state = resolveLoreModalChoice(state, 0);
+      expect(state.enemies.some((enemy) => enemy.q === 7 && enemy.r === 4 && enemy.hp > 0)).toBe(false);
+      expect(state.enemies.some((enemy) => enemy.q === 7 && enemy.r === 4 && enemy.hp === 0)).toBe(true);
+
+      state = setPendingHeroAction(state, {
+        heroId: state.heroes[0].id,
+        cardId: state.heroes[0].hand[0].id,
+        half: 'bottom',
+        useBasicInstead: false,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: 4, r: 2 });
+      expect(state.enemies.some((enemy) => enemy.q === 7 && enemy.r === 4 && enemy.hp > 0)).toBe(true);
+    });
+
+    it('exhausts a hero who drops to 0 HP on a trap', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      hero.hp = 3;
+      state = setPendingHeroAction(state, {
+        heroId: hero.id,
+        cardId: hero.hand[0].id,
+        half: 'bottom',
+        useBasicInstead: false,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: 2, r: 1 });
+      const updated = state.heroes.find((candidate) => candidate.id === hero.id);
+      expect(updated?.hp).toBe(0);
+      expect(updated?.exhausted).toBe(true);
+      expect(state.tiles.find((tile) => tile.q === 2 && tile.r === 1)?.terrain).toBe('floor');
+    });
+
+    it('applies retaliate from a shield action', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      const source = hero.hand[1];
+      hero.hand = hero.hand.map((card) =>
+        card.id === source.id ? { ...card, top: { ...card.top, retaliate: 3 } } : card
+      );
+      state = setPendingHeroAction(state, {
+        heroId: hero.id,
+        cardId: source.id,
+        half: 'top',
+        useBasicInstead: false,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: hero.q, r: hero.r });
+      expect(state.heroes[0].shield).toBe(2);
+      expect(state.heroes[0].retaliate).toBe(3);
+    });
+
+    it('enemy area attacks hit every adjacent hero and stop before occupied hexes', () => {
+      let state = createInitialCampaignState();
+      const lurker = state.enemies.find((enemy) => enemy.enemyType === 'silt_lurker');
+      if (!lurker) throw new Error('missing lurker');
+      state.enemies = [{ ...lurker, q: 2, r: 0, hp: 8, baseShield: 0, statuses: [] }];
+      state.heroes = state.heroes.map((hero) => ({ ...hero, hp: 10, shield: 0, retaliate: 0 }));
+      state.heroes[2].q = 3;
+      state.heroes[2].r = 0;
+      state.enemyModifierDeck = [{ id: 'zero', label: '+0', delta: 0 }];
+      state.enemyModifierDiscard = [];
+      state.phase = 'PHASE_TURN_EXECUTION';
+      const active = state.heroes[0];
+      state.turnOrder = [
+        { id: active.id, isHero: true, heroId: active.id, name: active.name, initiative: 5, acted: false },
+        {
+          id: 'enemy_group_silt_lurker',
+          isHero: false,
+          enemyType: 'silt_lurker',
+          name: 'Silt Lurker',
+          initiative: 40,
+          acted: false,
+          intentCard: {
+            id: 'aoe',
+            name: 'Pressure Vent',
+            initiative: 40,
+            move: 1,
+            attack: 2,
+            range: 1,
+            aoeAdjacentAll: true,
+            description: 'Attack 2 all adjacent',
+          },
+        },
+      ];
+      state.activeTurnIndex = 0;
+      state.heroes[0].selectedCards = null;
+
+      state = skipOrEndActiveTurn(state);
+      const byId = (id: string) => state.heroes.find((hero) => hero.id === id);
+      expect(byId(state.heroes[2].id)?.q).toBe(3);
+      const enemy = state.enemies[0];
+      expect(enemy.q).toBe(2);
+      expect(enemy.r).toBe(0);
+      expect(byId('hero_lorekeeper')?.hp).toBe(8);
+      expect(byId('hero_sentinel')?.hp).toBe(8);
+      expect(byId('hero_vanguard')?.hp).toBe(10);
+      expect(byId('hero_scavenger')?.hp).toBe(10);
+    });
+
+    it('stun discards the selected cards, applies wound, and ends the turn', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      hero.hp = 8;
+      hero.statuses = ['stun', 'wound', 'strengthen'];
+      hero.selectedCards = [hero.hand[0].id, hero.hand[1].id];
+      state.phase = 'PHASE_TURN_EXECUTION';
+      state.turnOrder = [
+        { id: hero.id, isHero: true, heroId: hero.id, name: hero.name, initiative: 12, acted: false },
+      ];
+      state.activeTurnIndex = 0;
+
+      state = skipOrEndActiveTurn(state);
+      const updated = state.heroes[0];
+      expect(updated.hp).toBe(7);
+      expect(updated.statuses).toEqual(['wound']);
+      expect(updated.discard.map((card) => card.id)).toEqual(expect.arrayContaining([hero.hand[0].id, hero.hand[1].id]));
+    });
+
+    it('exhausts a hero whose short rest leaves fewer than two cards', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      const only = hero.hand[0];
+      hero.hand = [];
+      hero.discard = [only];
+
+      state = performShortRest(state, hero.id, false);
+      expect(state.heroes[0].hand).toHaveLength(0);
+      expect(state.heroes[0].lost).toEqual([only]);
+      expect(state.heroes[0].exhausted).toBe(true);
+    });
+
+    it('exhausts a hero who cannot act when the round locks in', () => {
+      let state = createInitialCampaignState();
+      const stuck = state.heroes[0];
+      stuck.hand = [];
+      stuck.discard = [];
+      for (const hero of state.heroes.slice(1)) {
+        hero.discard = [hero.hand[0], hero.hand[1]];
+        hero.longRestDeclared = true;
+        hero.selectedCards = null;
+      }
+
+      expect(canLockInRound(state)).toBe(true);
+      state = lockInRoundAndReveal(state);
+      expect(state.heroes[0].exhausted).toBe(true);
+      expect(state.turnOrder.some((entry) => entry.heroId === stuck.id)).toBe(false);
+    });
+
+    it('keeps perk removals in the deck of the next scenario', () => {
+      let state = createInitialCampaignState();
+      state.heroes[0].xp = 18;
+      state = unlockHeroPerkInOutpost(state, state.heroes[0].id);
+      state = startScenario({ ...state, screen: 'outpost' }, 'sunken_lock');
+      const minusOnes = state.heroModifierDeck.filter(
+        (card) => card.delta === -1 && card.multiplier === undefined
+      );
+      expect(minusOnes).toHaveLength(3);
+      expect(state.heroes[0].level).toBe(2);
+    });
+
+    it('applies flanking to a basic attack and still spends the attack bonus on an empty hex', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      state.enemies[0].q = 1;
+      state.enemies[0].r = 0;
+      state.enemies[0].hp = 20;
+      state.enemies[0].baseShield = 0;
+      state.heroModifierDeck = [
+        { id: 'minus', label: '-1', delta: -1 },
+        { id: 'plus', label: '+1', delta: 1 },
+      ];
+      state.heroModifierDiscard = [];
+      hero.nextAttackBonus = 1;
+
+      state = setPendingHeroAction(state, {
+        heroId: hero.id,
+        cardId: hero.hand[0].id,
+        half: 'top',
+        useBasicInstead: true,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: 1, r: 0 });
+      expect(state.enemies[0].hp).toBe(16);
+      expect(state.heroes[0].nextAttackBonus).toBe(0);
+
+      state.heroes[0].topUsedThisTurn = false;
+      state.heroes[0].nextAttackBonus = 4;
+      const played = state.heroes[0].discard[0];
+      state.heroes[0].hand = [played, ...state.heroes[0].hand];
+      state.heroes[0].discard = [];
+      state = setPendingHeroAction(state, {
+        heroId: state.heroes[0].id,
+        cardId: played.id,
+        half: 'top',
+        useBasicInstead: true,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: 5, r: 5 });
+      expect(state.heroes[0].nextAttackBonus).toBe(0);
+    });
+
+    it('pulls the nearest enemy after a move with pull', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      const source = hero.hand[0];
+      hero.hand = [{ ...source, bottom: { ...source.bottom, pull: 1, range: 2 } }, ...hero.hand.slice(1)];
+      state.heroes = state.heroes.map((candidate, index) =>
+        index === 0 ? candidate : { ...candidate, exhausted: true }
+      );
+      state.enemies[0].q = 2;
+      state.enemies[0].r = 0;
+      state.enemies[0].hp = 12;
+
+      state = setPendingHeroAction(state, {
+        heroId: hero.id,
+        cardId: hero.hand[0].id,
+        half: 'bottom',
+        useBasicInstead: false,
+        consumeElement: false,
+      });
+      state = executeHeroActionOnHex(state, { q: 0, r: 0 });
+      expect(state.heroes[0].q).toBe(0);
+      expect(state.enemies[0].q).toBe(1);
+      expect(state.enemies[0].r).toBe(0);
+      expect(state.enemies[0].hp).toBe(12);
+    });
+
+    it('does not grant a long rest to a stunned hero at the end of the round', () => {
+      let state = createInitialCampaignState();
+      const hero = state.heroes[0];
+      hero.hp = 4;
+      hero.statuses = ['stun'];
+      hero.longRestDeclared = true;
+      hero.discard = [hero.hand[0], hero.hand[1]];
+      hero.hand = hero.hand.slice(2);
+      state.phase = 'PHASE_TURN_EXECUTION';
+      state.turnOrder = [
+        { id: hero.id, isHero: true, heroId: hero.id, name: hero.name, initiative: 99, acted: false },
+      ];
+      state.activeTurnIndex = 0;
+
+      state = skipOrEndActiveTurn(state);
+      expect(state.heroes[0].hp).toBe(4);
+      expect(state.heroes[0].lost).toHaveLength(0);
+      expect(state.heroes[0].longRestDeclared).toBe(false);
+    });
+
+    it('drops temporary move markers when returning to the outpost', () => {
+      let state = createInitialCampaignState();
+      state.phase = 'PHASE_SCENARIO_VICTORY';
+      state.heroes[0].equippedRelics = [
+        { relicId: 'aegis_aether_plate', used: true },
+        { relicId: '__boots_jump', used: false },
+        { relicId: '__move_bonus_2', used: false },
+      ];
+
+      state = returnToOutpost(state);
+      const relics = state.heroes[0].equippedRelics;
+      expect(relics.map((relic) => relic.relicId)).toEqual(['aegis_aether_plate']);
+      expect(relics[0].used).toBe(false);
     });
   });
 });

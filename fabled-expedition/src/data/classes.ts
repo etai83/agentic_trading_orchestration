@@ -321,7 +321,6 @@ export const HERO_ARCHETYPES: Record<HeroClassId, HeroArchetype> = {
           type: 'move',
           value: 5,
           burn: true,
-          xp: 1,
         },
       },
       {
@@ -440,7 +439,7 @@ export const HERO_ARCHETYPES: Record<HeroClassId, HeroArchetype> = {
         initiative: 52,
         top: {
           label: 'Chronicle of Decline',
-          description: 'Target 2 enemies within Range 3: Muddle (Consume Aether: also Stun 1 target)',
+          description: 'Target 2 enemies within Range 3: Curse / Muddle (Consume Aether: also Stun 1 target)',
           type: 'utility',
           range: 3,
           targets: 2,
@@ -487,14 +486,13 @@ export const HERO_ARCHETYPES: Record<HeroClassId, HeroArchetype> = {
         initiative: 67,
         top: {
           label: 'Singularity Collapse',
-          description: 'Attack 4, Range 3, 3-hex triangle AoE, Pull 1 toward center (+2 XP, Burn, Infuse Aether)',
+          description: 'Attack 4, Range 3, 3-hex triangle AoE, Pull 1 toward center (Burn, Infuse Aether)',
           type: 'attack',
           value: 4,
           range: 3,
           aoePattern: 'triangle3',
           pull: 1,
           burn: true,
-          xp: 2,
           infuse: 'aether',
         },
         bottom: {
@@ -517,6 +515,7 @@ export const HERO_ARCHETYPES: Record<HeroClassId, HeroArchetype> = {
           type: 'attack',
           value: 2,
           range: 3,
+          selfHeal: 2,
           consume: {
             element: 'mire',
             bonusDescription: 'Poison all enemies adjacent to target',
@@ -545,7 +544,7 @@ export const HERO_ARCHETYPES: Record<HeroClassId, HeroArchetype> = {
         },
         bottom: {
           label: 'Decipher Runes',
-          description: 'Move 3, interact with adjacent Lore Node',
+          description: 'Move 3, automatically succeed on adjacent Lore Node check',
           type: 'move',
           value: 3,
         },
@@ -624,7 +623,6 @@ export const HERO_ARCHETYPES: Record<HeroClassId, HeroArchetype> = {
           value: 4,
           range: 1,
           burn: true,
-          xp: 2,
         },
         bottom: {
           label: 'Marching Orders',
@@ -742,9 +740,9 @@ export const HERO_ARCHETYPES: Record<HeroClassId, HeroArchetype> = {
           label: 'Overclock Protocol',
           description: 'All allies within Range 2 perform Attack 2 immediately (Burn)',
           type: 'utility',
+          value: 2,
           range: 2,
           burn: true,
-          xp: 2,
         },
         bottom: {
           label: 'Full Steam',

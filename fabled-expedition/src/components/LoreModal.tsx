@@ -49,17 +49,19 @@ export const LoreModal: React.FC<LoreModalProps> = ({ modalData, onChooseOption 
     }
 
     if (option.hpDelta) {
+      const hurting = option.hpDelta < 0;
+      const amount = Math.abs(option.hpDelta);
       badges.push(
         <span
           key="hp"
           style={{
-            color: '#ef4444',
+            color: hurting ? '#ef4444' : '#4ade80',
             background: 'rgba(0,0,0,0.4)',
             padding: '2px 6px',
             borderRadius: '3px',
           }}
         >
-          ❤️ Damage {option.hpDelta} HP
+          {hurting ? `❤️ Suffer ${amount} HP` : `❤️ Heal ${amount} HP`}
         </span>
       );
     }
@@ -159,11 +161,7 @@ export const LoreModal: React.FC<LoreModalProps> = ({ modalData, onChooseOption 
 
         <div className="lore-options-grid">
           {loreNode.options.map((option, idx) => (
-            <div
-              key={option.label}
-              className="lore-option-card"
-              onClick={() => onChooseOption(idx as 0 | 1)}
-            >
+            <div key={option.label} className="lore-option-card">
               <div className="lore-option-label">{option.label}</div>
               <div className="lore-option-desc">{option.description}</div>
               <div className="lore-outcome-preview">
@@ -173,10 +171,7 @@ export const LoreModal: React.FC<LoreModalProps> = ({ modalData, onChooseOption 
               <button
                 className="btn btn-bronze"
                 style={{ marginTop: 'auto', width: '100%' }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onChooseOption(idx as 0 | 1);
-                }}
+                onClick={() => onChooseOption(idx as 0 | 1)}
               >
                 Choose Path
               </button>

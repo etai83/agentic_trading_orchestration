@@ -26,8 +26,34 @@ import type {
   TurnOrderEntry,
   EnemyIntentCard,
   ElementType,
+  ElementState,
   StatusEffect,
+  AbilityHalf,
+  EnemyTypeId,
+  ScenarioConfig,
 } from '../types/game';
+
+const EXPIRING_STATUSES: StatusEffect[] = ['immobilize', 'muddle', 'strengthen', 'stun'];
+const BOOTS_MARKER = '__boots_jump';
+const MOVE_BONUS_PREFIX = '__move_bonus_';
+const SUMMON_ATTACK = 2;
+const SUMMON_RANGE = 2;
+
+type RuntimeEntry = TurnOrderEntry & {
+  prepared?: boolean;
+  expireStatuses?: StatusEffect[];
+};
+
+interface FightUnit {
+  id: string;
+  name: string;
+  q: number;
+  r: number;
+  hp: number;
+  hover?: boolean;
+  immunities?: StatusEffect[];
+  statuses: StatusEffect[];
+}
 
 function shuffleArray<T>(array: T[]): T[] {
   const arr = [...array];
@@ -36,6 +62,306 @@ function shuffleArray<T>(array: T[]): T[] {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
+}
+
+function cloneState(state: GameState): GameState {
+  return {
+    ...state,
+    completedScenarioIds: [...state.completedScenarioIds],
+    tiles: state.tiles.map((t) => ({ ...t })),
+    heroes: state.heroes.map((h) => ({
+      ...h,
+      statuses: [...h.statuses],
+      hand: [...h.hand],
+      discard: [...h.discard],
+      lost: [...h.lost],
+      equippedRelics: h.equippedRelics.map((r) => ({ ...r })),
+      selectedCards: h.selectedCards ? [h.selectedCards[0], h.selectedCards[1]] : null,
+    })),
+    enemies: state.enemies.map((e) => ({
+      ...e,
+      immunities: [...e.immunities],
+      statuses: [...e.statuses],
+    })),
+    elements: { ...state.elements },
+    enemyIntents: { ...state.enemyIntents },
+    turnOrder: state.turnOrder.map((t) => ({ ...t })),
+    heroModifierDeck: [...state.heroModifierDeck],
+    heroModifierDiscard: [...state.heroModifierDiscard],
+    enemyModifierDeck: [...state.enemyModifierDeck],
+    enemyModifierDiscard: [...state.enemyModifierDiscard],
+    unlockedRelicIds: [...state.unlockedRelicIds],
+    combatLog: [...state.combatLog],
+  };
+}
+
+function isTerminal(state: GameState): boolean {
+  return state.phase === 'PHASE_SCENARIO_VICTORY' || state.phase === 'PHASE_SCENARIO_DEFEAT';
+}
+
+function scenarioOf(state: GameState): ScenarioConfig {
+  return SCENARIO_BY_ID[state.scenarioId] || SCENARIOS[0];
+}
+
+function elementReady(elements: Record<ElementType, ElementState>, element: ElementType): boolean {
+  return elements[element] === 'strong' || elements[element] === 'waning';
+}
+
+function addStatus(unit: { statuses: StatusEffect[]; immunities?: StatusEffect[] }, status: StatusEffect) {
+  if (unit.immunities?.includes(status)) return;
+  if (!unit.statuses.includes(status)) unit.statuses.push(status);
+}
+
+function expiringNow(statuses: StatusEffect[]): StatusEffect[] {
+  return statuses.filter((s) => EXPIRING_STATUSES.includes(s));
+}
+
+function expireNoted(unit: { statuses: StatusEffect[] }, noted: StatusEffect[] | undefined) {
+  if (!noted || noted.length === 0) return;
+  unit.statuses = unit.statuses.filter((s) => !noted.includes(s));
+}
+
+function discardSelected(hero: HeroUnitState) {
+  if (!hero.selectedCards) return;
+  for (const cardId of hero.selectedCards) {
+    if (!cardId) continue;
+    const idx = hero.hand.findIndex((c) => c.id === cardId);
+    if (idx === -1) continue;
+    const [card] = hero.hand.splice(idx, 1);
+    hero.discard.push(card);
+  }
+  hero.selectedCards = null;
+}
+
+function occupiedKeys(state: GameState, ignoreId?: string): Set<string> {
+  const keys = new Set<string>();
+  for (const hero of state.heroes) {
+    if (!hero.exhausted && hero.hp > 0) keys.add(coordKey(hero));
+  }
+  for (const enemy of state.enemies) {
+    if (enemy.hp > 0 && enemy.id !== ignoreId) keys.add(coordKey(enemy));
+  }
+  return keys;
+}
+
+function canStopOn(state: GameState, coord: HexCoord, hover: boolean, occupied: Set<string>): boolean {
+  const tile = getTileAt(state.tiles, coord);
+  if (!tile || !tile.revealed || tile.terrain === 'wall') return false;
+  if (tile.terrain === 'obstacle' && !hover) return false;
+  if (occupied.has(coordKey(coord))) return false;
+  return true;
+}
+
+function bestForcedStep(from: HexCoord, source: HexCoord, direction: 'push' | 'pull'): HexCoord | null {
+  const dq = from.q - source.q;
+  const dr = from.r - source.r;
+  const ds = -dq - dr;
+  const sign = direction === 'push' ? 1 : -1;
+  let best: HexCoord | null = null;
+  let bestDot = 0;
+  for (const neighbor of hexNeighbors(from)) {
+    const ndq = neighbor.q - from.q;
+    const ndr = neighbor.r - from.r;
+    const nds = -ndq - ndr;
+    const dot = sign * (ndq * dq + ndr * dr + nds * ds);
+    if (dot > bestDot) {
+      bestDot = dot;
+      best = neighbor;
+    }
+  }
+  return best;
+}
+
+function applyHazardAndTrap(state: GameState, unit: FightUnit, coord: HexCoord) {
+  const tile = getTileAt(state.tiles, coord);
+  if (!tile) return;
+  if (tile.terrain === 'trap') {
+    unit.hp = Math.max(0, unit.hp - 3);
+    addStatus(unit, 'immobilize');
+    tile.terrain = 'floor';
+    state.combatLog.push(`${unit.name} sprung a trap! Suffered 3 damage and Immobilized.`);
+  } else if (tile.terrain === 'hazard' && !unit.hover) {
+    unit.hp = Math.max(0, unit.hp - 2);
+    state.combatLog.push(`${unit.name} stepped on hazardous terrain! Suffered 2 damage.`);
+  }
+}
+
+function forceMove(state: GameState, unit: FightUnit, source: HexCoord, amount: number, direction: 'push' | 'pull') {
+  if (amount <= 0 || unit.hp <= 0) return;
+  for (let step = 0; step < amount && unit.hp > 0; step++) {
+    const next = bestForcedStep({ q: unit.q, r: unit.r }, source, direction);
+    if (!next) break;
+    const occupied = occupiedKeys(state, unit.id);
+    if (!canStopOn(state, next, !!unit.hover, occupied)) break;
+    unit.q = next.q;
+    unit.r = next.r;
+    applyHazardAndTrap(state, unit, next);
+  }
+}
+
+function makeEnemy(
+  type: EnemyTypeId,
+  coord: HexCoord,
+  roomId: number,
+  id: string,
+  hpOverride?: number
+): EnemyUnitState {
+  const archetype = ENEMY_ARCHETYPES[type];
+  const maxHp = archetype ? archetype.maxHp : 5;
+  return {
+    id,
+    unitType: 'enemy',
+    enemyType: type,
+    name: archetype ? archetype.name : type,
+    q: coord.q,
+    r: coord.r,
+    roomId,
+    hp: hpOverride === undefined ? maxHp : hpOverride,
+    maxHp,
+    baseShield: archetype ? archetype.baseShield : 0,
+    tempShield: 0,
+    hover: archetype ? !!archetype.hover : false,
+    isBoss: archetype ? !!archetype.isBoss : false,
+    isObjectiveStructure: archetype ? !!archetype.isObjectiveStructure : false,
+    immunities: archetype?.immunities ? [...archetype.immunities] : [],
+    statuses: [],
+  };
+}
+
+function livingHeroes(state: GameState): HeroUnitState[] {
+  return state.heroes.filter((h) => !h.exhausted && h.hp > 0);
+}
+
+function heroesInRange(state: GameState, origin: HexCoord, range: number): HeroUnitState[] {
+  return livingHeroes(state)
+    .filter((hero) => {
+      const dist = hexDistance(origin, hero);
+      return dist <= range && hasLineOfSight(state.tiles, origin, hero);
+    })
+    .sort((a, b) => hexDistance(origin, a) - hexDistance(origin, b) || a.id.localeCompare(b.id));
+}
+
+function closestHero(state: GameState, origin: HexCoord): HeroUnitState | null {
+  const heroes = livingHeroes(state);
+  if (heroes.length === 0) return null;
+  return heroes.reduce((best, hero) =>
+    hexDistance(origin, hero) < hexDistance(origin, best) ? hero : best
+  );
+}
+
+function readMoveBuff(hero: HeroUnitState): { bonus: number; jump: boolean } {
+  let bonus = 0;
+  let jump = false;
+  for (const relic of hero.equippedRelics) {
+    if (relic.relicId === BOOTS_MARKER) {
+      bonus += 2;
+      jump = true;
+    } else if (relic.relicId.startsWith(MOVE_BONUS_PREFIX)) {
+      bonus += Number(relic.relicId.slice(MOVE_BONUS_PREFIX.length)) || 0;
+    }
+  }
+  return { bonus, jump };
+}
+
+function consumeMoveBuffs(hero: HeroUnitState) {
+  hero.equippedRelics = hero.equippedRelics.filter(
+    (r) => r.relicId !== BOOTS_MARKER && !r.relicId.startsWith(MOVE_BONUS_PREFIX)
+  );
+}
+
+function grantMoveBonus(state: GameState, hero: HeroUnitState, amount: number, range: number | undefined) {
+  const reach = range && range > 0 ? range : 1;
+  for (const ally of state.heroes) {
+    if (ally.id === hero.id || ally.exhausted || ally.hp <= 0) continue;
+    if (hexDistance(hero, ally) > reach) continue;
+    ally.equippedRelics.push({ relicId: `${MOVE_BONUS_PREFIX}${amount}`, used: false });
+  }
+}
+
+function isPlaceTrap(half: AbilityHalf | null | undefined): boolean {
+  if (!half || half.type !== 'utility') return false;
+  if (!half.statusApplied?.includes('immobilize')) return false;
+  return !half.range && !half.targets && !half.disarmTrap && !half.recoverDiscarded && !half.grantAllyAttackBonus;
+}
+
+function openDoor(state: GameState, tileCoord: HexCoord) {
+  const tile = getTileAt(state.tiles, tileCoord);
+  if (!tile || tile.terrain !== 'door' || tile.interacted || !tile.unlocksRoomId) return;
+  const roomId = tile.unlocksRoomId;
+  tile.interacted = true;
+  for (const other of state.tiles) {
+    if (other.roomId === roomId) other.revealed = true;
+  }
+
+  const scenario = scenarioOf(state);
+  scenario.enemySpawns
+    .filter((spawn) => spawn.roomId === roomId)
+    .forEach((spawn, idx) => {
+      state.enemies.push(
+        makeEnemy(
+          spawn.enemyType,
+          { q: spawn.q, r: spawn.r },
+          spawn.roomId,
+          `enemy_${spawn.enemyType}_r${roomId}_${idx}`
+        )
+      );
+    });
+
+  for (const enemy of state.enemies) {
+    if (enemy.hp <= 0 && enemy.id.startsWith(`pending_${roomId}_`)) {
+      enemy.hp = enemy.maxHp;
+      enemy.id = enemy.id.replace('pending_', 'alive_');
+    }
+  }
+
+  state.combatLog.push(`Door breached! Room ${roomId} revealed.`);
+}
+
+function modifierMode(
+  advantage: boolean,
+  disadvantage: boolean
+): 'normal' | 'advantage' | 'disadvantage' {
+  if (advantage && !disadvantage) return 'advantage';
+  if (!advantage && disadvantage) return 'disadvantage';
+  return 'normal';
+}
+
+function strike(params: {
+  state: GameState;
+  deck: 'hero' | 'enemy';
+  base: number;
+  poisoned: boolean;
+  shield: number;
+  pierce: number;
+  mode: 'normal' | 'advantage' | 'disadvantage';
+  targetName: string;
+}): { damage: number; missed: boolean; label: string } {
+  const attack = params.base + (params.poisoned ? 1 : 0);
+  const deck = params.deck === 'hero' ? params.state.heroModifierDeck : params.state.enemyModifierDeck;
+  const discard = params.deck === 'hero' ? params.state.heroModifierDiscard : params.state.enemyModifierDiscard;
+  const drawn = drawModifier(deck, discard, attack, params.mode);
+  if (params.deck === 'hero') {
+    params.state.heroModifierDeck = drawn.nextDeck;
+    params.state.heroModifierDiscard = drawn.nextDiscard;
+  } else {
+    params.state.enemyModifierDeck = drawn.nextDeck;
+    params.state.enemyModifierDiscard = drawn.nextDiscard;
+  }
+  params.state.lastModifierPopup = {
+    targetName: params.targetName,
+    result: drawn.result,
+    timestamp: Date.now(),
+  };
+  const missed = drawn.result.chosenCard.multiplier === 0;
+  const effectiveShield = Math.max(0, params.shield - params.pierce);
+  const damage = Math.max(0, drawn.result.finalDamage - effectiveShield);
+  return { damage, missed, label: drawn.result.chosenCard.label };
+}
+
+function exhaustHero(hero: HeroUnitState, state: GameState) {
+  if (hero.hp > 0 || hero.exhausted) return;
+  hero.exhausted = true;
+  state.combatLog.push(`${hero.name} has exhausted!`);
 }
 
 export function createStandardModifierDeck(): ModifierCard[] {
@@ -91,21 +417,19 @@ export function drawModifier(
   let currentDiscard = [...discard];
   const count = mode === 'normal' ? 1 : 2;
 
-  if (currentDeck.length < count) {
-    if (currentDiscard.length > 0) {
-      currentDeck = [...currentDeck, ...shuffleArray(currentDiscard)];
-      currentDiscard = [];
-    }
-    if (currentDeck.length < count) {
-      currentDeck = [...currentDeck, ...createStandardModifierDeck()];
-    }
+  if (currentDeck.length < count && currentDiscard.length > 0) {
+    currentDeck = shuffleArray([...currentDeck, ...currentDiscard]);
+    currentDiscard = [];
   }
 
-  const drawnCards = currentDeck.slice(0, count);
-  const nextDeck = currentDeck.slice(count);
+  const drawCount = Math.min(count, currentDeck.length);
+  const drawnCards = currentDeck.slice(0, drawCount);
+  let nextDeck = currentDeck.slice(drawCount);
 
   let chosenCard: ModifierCard;
-  if (mode === 'normal') {
+  if (drawnCards.length === 0) {
+    chosenCard = { id: 'mod_empty', label: '+0', delta: 0 };
+  } else if (drawnCards.length === 1 || mode === 'normal') {
     chosenCard = drawnCards[0];
   } else if (mode === 'advantage') {
     const dmg0 = calculateCardDamage(drawnCards[0], baseDamage);
@@ -117,13 +441,18 @@ export function drawModifier(
     chosenCard = dmg1 < dmg0 ? drawnCards[1] : drawnCards[0];
   }
 
-  const finalDamage = calculateCardDamage(chosenCard, baseDamage);
+  const finalDamage =
+    drawnCards.length === 0 ? Math.max(0, baseDamage) : calculateCardDamage(chosenCard, baseDamage);
 
   const nextDiscard = [...currentDiscard];
   for (const card of drawnCards) {
-    if (!card.temporary) {
-      nextDiscard.push(card);
-    }
+    if (!card.temporary) nextDiscard.push(card);
+  }
+
+  // Critical and Null reshuffle the discard into the deck after the draw. Bless/Curse do not.
+  if (drawnCards.some((card) => card.shuffleAtEnd && !card.temporary)) {
+    nextDeck = shuffleArray([...nextDeck, ...nextDiscard]);
+    nextDiscard.length = 0;
   }
 
   return {
@@ -206,7 +535,9 @@ export function startScenario(state: GameState, scenarioId: string): GameState {
     const combinedHand = [...starterCards, ...level2Cards].slice(0, archetype.handSize);
 
     const equippedRelics = existing
-      ? existing.equippedRelics.map((r) => ({ ...r, used: false }))
+      ? existing.equippedRelics
+          .filter((r) => r.relicId !== BOOTS_MARKER && !r.relicId.startsWith(MOVE_BONUS_PREFIX))
+          .map((r) => ({ ...r, used: false }))
       : [];
 
     return {
@@ -262,14 +593,15 @@ export function startScenario(state: GameState, scenarioId: string): GameState {
     });
 
   let heroDeck = createStandardModifierDeck();
+  const perkCuts = nextHeroes.reduce((sum, hero) => sum + (hero.perksUnlocked || 0) * 2, 0);
+  if (perkCuts > 0) heroDeck = removeMinusOnes(heroDeck, perkCuts).next;
   if (state.reputation >= 2) {
     heroDeck.push({
-      id: `bless_rep_${Date.now()}`,
+      id: `bless_rep_${heroDeck.length}`,
       label: 'Bless (2x)',
       delta: 0,
       multiplier: 2,
       temporary: true,
-      shuffleAtEnd: true,
     });
     heroDeck = shuffleArray(heroDeck);
   }
@@ -394,37 +726,38 @@ export function performShortRest(
   const hero = state.heroes[heroIndex];
   if (hero.exhausted || hero.discard.length === 0) return state;
 
+  let lostIndex = Math.floor(Math.random() * hero.discard.length);
   let currentHp = hero.hp;
-  if (rerollWithDamage && hero.hp > 1) {
+  if (rerollWithDamage && hero.hp > 1 && hero.discard.length > 1) {
     currentHp -= 1;
+    let reroll = Math.floor(Math.random() * (hero.discard.length - 1));
+    if (reroll >= lostIndex) reroll += 1;
+    lostIndex = reroll;
   }
-
-  const lostIndex =
-    rerollWithDamage && hero.discard.length > 1
-      ? 1
-      : Math.floor(Math.random() * hero.discard.length);
 
   const lostCard = hero.discard[lostIndex];
   const recoveredCards = hero.discard.filter((_, idx) => idx !== lostIndex);
+  const nextHand = [...hero.hand, ...recoveredCards];
 
   const updatedHero: HeroUnitState = {
     ...hero,
     hp: currentHp,
-    hand: [...hero.hand, ...recoveredCards],
+    hand: nextHand,
     discard: [],
     lost: [...hero.lost, lostCard],
+    exhausted: hero.exhausted || nextHand.length < 2,
   };
 
   const nextHeroes = [...state.heroes];
   nextHeroes[heroIndex] = updatedHero;
 
+  const log = [`${hero.name} performs Short Rest, losing ${lostCard.name}.`];
+  if (updatedHero.exhausted && !hero.exhausted) log.push(`${hero.name} has exhausted!`);
+
   return {
     ...state,
     heroes: nextHeroes,
-    combatLog: [
-      ...state.combatLog,
-      `${hero.name} performs Short Rest, losing ${lostCard.name}.`,
-    ],
+    combatLog: [...state.combatLog, ...log],
   };
 }
 
@@ -436,159 +769,164 @@ export function canLockInRound(state: GameState): boolean {
 
   return livingHeroes.every((h) => {
     if (h.longRestDeclared) return true;
+    if (h.hand.length < 2 && h.discard.length < 2) return true;
     if (!h.selectedCards) return false;
     const validCards = h.selectedCards.filter(Boolean);
     return validCards.length === 2;
   });
 }
 
-function resolveEnemyMovementAndAttack(
+function moveEnemyAlong(state: GameState, enemy: EnemyUnitState, focus: HeroUnitState, move: number) {
+  if (move <= 0 || enemy.statuses.includes('immobilize') || enemy.hp <= 0) return;
+  const path = findShortestPath({
+    start: { q: enemy.q, r: enemy.r },
+    goal: { q: focus.q, r: focus.r },
+    jump: false,
+    hover: enemy.hover,
+    tiles: state.tiles,
+    blockedCoords: [
+      ...livingHeroes(state).map((h) => ({ q: h.q, r: h.r })),
+      ...state.enemies.filter((e) => e.hp > 0 && e.id !== enemy.id).map((e) => ({ q: e.q, r: e.r })),
+    ],
+  });
+
+  let steps = 0;
+  for (const step of path) {
+    if (steps >= move || enemy.hp <= 0) break;
+    const occupied = occupiedKeys(state, enemy.id).has(coordKey(step));
+    if (occupied && !enemy.hover) break;
+    steps += 1;
+    if (occupied) continue;
+    enemy.q = step.q;
+    enemy.r = step.r;
+    applyHazardAndTrap(state, enemy, step);
+  }
+}
+
+function attackHero(
   state: GameState,
   enemy: EnemyUnitState,
+  hero: HeroUnitState,
   intent: EnemyIntentCard
-): GameState {
-  let currentState = { ...state };
-  let currentEnemy = { ...enemy };
-
-  const livingHeroes = currentState.heroes.filter((h) => !h.exhausted);
-  if (livingHeroes.length === 0) return currentState;
-
-  let focusHero = livingHeroes[0];
-  let minDistance = hexDistance(
-    { q: currentEnemy.q, r: currentEnemy.r },
-    { q: focusHero.q, r: focusHero.r }
+) {
+  if (enemy.hp <= 0 || hero.hp <= 0 || hero.exhausted) return;
+  const dist = hexDistance(enemy, hero);
+  const mode = modifierMode(
+    enemy.statuses.includes('strengthen'),
+    enemy.statuses.includes('muddle') || hasCover(enemy, hero, state.tiles)
+  );
+  const hit = strike({
+    state,
+    deck: 'enemy',
+    base: intent.attack,
+    poisoned: hero.statuses.includes('poison'),
+    shield: hero.shield,
+    pierce: intent.pierce || 0,
+    mode,
+    targetName: hero.name,
+  });
+  hero.hp = Math.max(0, hero.hp - hit.damage);
+  state.combatLog.push(
+    `${enemy.name} attacks ${hero.name} for ${hit.damage} damage (${hit.label}).`
   );
 
-  for (let i = 1; i < livingHeroes.length; i++) {
-    const hero = livingHeroes[i];
-    const dist = hexDistance(
-      { q: currentEnemy.q, r: currentEnemy.r },
-      { q: hero.q, r: hero.r }
-    );
-    if (dist < minDistance) {
-      minDistance = dist;
-      focusHero = hero;
+  if (!hit.missed) {
+    for (const status of intent.statusApplied || []) addStatus(hero, status);
+    if (intent.push) forceMove(state, hero, enemy, intent.push, 'push');
+    if (intent.pull) forceMove(state, hero, enemy, intent.pull, 'pull');
+  }
+
+  exhaustHero(hero, state);
+  if (hero.hp > 0 && hero.retaliate > 0 && dist <= 1 && enemy.hp > 0) {
+    const retaliate = Math.max(0, hero.retaliate - (enemy.baseShield + enemy.tempShield));
+    if (retaliate > 0) {
+      enemy.hp = Math.max(0, enemy.hp - retaliate);
+      state.combatLog.push(
+        `${hero.name} retaliates against ${enemy.name} for ${retaliate} damage.`
+      );
+    }
+  }
+}
+
+function resolveEnemyAction(state: GameState, enemy: EnemyUnitState, intent: EnemyIntentCard) {
+  const focus = closestHero(state, enemy);
+  if (!focus) return;
+
+  if (intent.healAlliesRange2 && intent.healAlliesRange2 > 0) {
+    for (const ally of state.enemies) {
+      if (ally.hp <= 0 || ally.isSummon) continue;
+      if (hexDistance(enemy, ally) <= 2) {
+        ally.hp = Math.min(ally.maxHp, ally.hp + intent.healAlliesRange2);
+      }
     }
   }
 
-  const effectiveMove = intent.move;
-  if (effectiveMove > 0 && !currentEnemy.statuses.includes('immobilize')) {
-    const path = findShortestPath({
-      start: { q: currentEnemy.q, r: currentEnemy.r },
-      goal: { q: focusHero.q, r: focusHero.r },
-      jump: false,
-      hover: currentEnemy.hover,
-      tiles: currentState.tiles,
-      blockedCoords: [
-        ...currentState.heroes.filter((h) => !h.exhausted).map((h) => ({ q: h.q, r: h.r })),
-        ...currentState.enemies
-          .filter((e) => e.hp > 0 && e.id !== currentEnemy.id)
-          .map((e) => ({ q: e.q, r: e.r })),
-      ],
+  if (intent.createHazardHexes && intent.createHazardHexes > 0) {
+    const range = intent.range && intent.range > 0 ? intent.range : 3;
+    const floors = state.tiles
+      .filter(
+        (tile) =>
+          tile.revealed &&
+          tile.terrain === 'floor' &&
+          hexDistance(enemy, tile) > 0 &&
+          hexDistance(enemy, tile) <= range
+      )
+      .sort((a, b) => hexDistance(enemy, a) - hexDistance(enemy, b));
+    for (const tile of floors.slice(0, intent.createHazardHexes)) {
+      tile.terrain = 'hazard';
+    }
+    state.combatLog.push(`${enemy.name} floods the chamber with hazardous terrain.`);
+  }
+
+  if (intent.spawnEnemyType) {
+    const occupied = occupiedKeys(state);
+    const spot = hexNeighbors(enemy).find((coord) => {
+      const tile = getTileAt(state.tiles, coord);
+      return (
+        !!tile &&
+        tile.revealed &&
+        tile.terrain !== 'wall' &&
+        tile.terrain !== 'obstacle' &&
+        !occupied.has(coordKey(coord))
+      );
     });
-
-    if (path && path.length > 0) {
-      const stepsToTake = Math.min(effectiveMove, path.length);
-      const destination = path[stepsToTake - 1];
-
-      currentEnemy.q = destination.q;
-      currentEnemy.r = destination.r;
-
-      const tile = getTileAt(currentState.tiles, destination);
-      if (tile) {
-        if (tile.terrain === 'trap') {
-          currentEnemy.hp = Math.max(0, currentEnemy.hp - 3);
-          if (!currentEnemy.immunities.includes('immobilize')) {
-            currentEnemy.statuses.push('immobilize');
-          }
-          currentState.tiles = currentState.tiles.map((t) =>
-            coordsEqual(t, destination) ? { ...t, terrain: 'floor' } : t
-          );
-          currentState.combatLog.push(`${currentEnemy.name} sprung a trap! Suffered 3 damage.`);
-        } else if (tile.terrain === 'hazard' && !currentEnemy.hover) {
-          currentEnemy.hp = Math.max(0, currentEnemy.hp - 2);
-          currentState.combatLog.push(`${currentEnemy.name} stepped on hazardous terrain! Suffered 2 damage.`);
-        }
-      }
+    if (spot) {
+      const tile = getTileAt(state.tiles, spot);
+      state.enemies.push(
+        makeEnemy(
+          intent.spawnEnemyType,
+          spot,
+          tile?.roomId ?? enemy.roomId,
+          `spawn_${intent.spawnEnemyType}_${state.enemies.length}`
+        )
+      );
+      state.combatLog.push(`${enemy.name} spawns a ${ENEMY_ARCHETYPES[intent.spawnEnemyType]?.name || 'foe'}.`);
     }
   }
 
-  if (currentEnemy.hp > 0 && intent.attack > 0) {
-    const range = intent.range || 1;
-    const distToTarget = hexDistance(
-      { q: currentEnemy.q, r: currentEnemy.r },
-      { q: focusHero.q, r: focusHero.r }
-    );
+  moveEnemyAlong(state, enemy, focus, intent.move || 0);
+  if (enemy.hp <= 0) return;
 
-    if (distToTarget <= range && hasLineOfSight(currentState.tiles, currentEnemy, focusHero)) {
-      const isMuddled = currentEnemy.statuses.includes('muddle');
-      const isStrengthened = currentEnemy.statuses.includes('strengthen');
-      const targetHasCover = hasCover(currentEnemy, focusHero, currentState.tiles);
-
-      let mode: 'normal' | 'advantage' | 'disadvantage' = 'normal';
-      const adv = isStrengthened;
-      const disadv = isMuddled || targetHasCover;
-
-      if (adv && !disadv) mode = 'advantage';
-      else if (!adv && disadv) mode = 'disadvantage';
-
-      const { result, nextDeck, nextDiscard } = drawModifier(
-        currentState.enemyModifierDeck,
-        currentState.enemyModifierDiscard,
-        intent.attack,
-        mode
-      );
-
-      currentState.enemyModifierDeck = nextDeck;
-      currentState.enemyModifierDiscard = nextDiscard;
-      currentState.lastModifierPopup = {
-        targetName: focusHero.name,
-        result,
-        timestamp: Date.now(),
-      };
-
-      const pierce = intent.pierce || 0;
-      const effectiveShield = Math.max(0, focusHero.shield - pierce);
-      let incomingDamage = Math.max(0, result.finalDamage - effectiveShield);
-      if (focusHero.statuses.includes('poison')) {
-        incomingDamage += 1;
-      }
-
-      focusHero.hp = Math.max(0, focusHero.hp - incomingDamage);
-      currentState.combatLog.push(
-        `${currentEnemy.name} attacks ${focusHero.name} for ${incomingDamage} damage (${result.chosenCard.label}).`
-      );
-
-      if (intent.statusApplied) {
-        for (const st of intent.statusApplied) {
-          if (!focusHero.statuses.includes(st)) {
-            focusHero.statuses.push(st);
-          }
-        }
-      }
-
-      if (focusHero.retaliate > 0 && distToTarget <= 1) {
-        currentEnemy.hp = Math.max(0, currentEnemy.hp - focusHero.retaliate);
-        currentState.combatLog.push(
-          `${focusHero.name} retaliates against ${currentEnemy.name} for ${focusHero.retaliate} damage.`
-        );
-      }
-
-      if (focusHero.hp <= 0) {
-        focusHero.exhausted = true;
-        currentState.combatLog.push(`${focusHero.name} has exhausted!`);
-      }
+  if (intent.attack > 0) {
+    const range = intent.range && intent.range > 0 ? intent.range : 1;
+    let targets: HeroUnitState[] = [];
+    if (intent.aoeAdjacentAll) {
+      targets = heroesInRange(state, enemy, range).filter((hero) => hexDistance(enemy, hero) === 1);
+    } else {
+      const limit = intent.targets && intent.targets > 1 ? intent.targets : 1;
+      targets = heroesInRange(state, enemy, range).slice(0, limit);
     }
+    for (const hero of targets) attackHero(state, enemy, hero, intent);
+    return;
   }
 
-  currentState.enemies = currentState.enemies.map((e) =>
-    e.id === currentEnemy.id ? currentEnemy : e
-  );
-  currentState.heroes = currentState.heroes.map((h) =>
-    h.id === focusHero.id ? focusHero : h
-  );
-
-  return currentState;
+  if (intent.statusApplied && intent.statusApplied.length > 0) {
+    const range = intent.range && intent.range > 0 ? intent.range : 1;
+    for (const hero of heroesInRange(state, enemy, range)) {
+      if (hexDistance(enemy, hero) < 1) continue;
+      for (const status of intent.statusApplied) addStatus(hero, status);
+    }
+  }
 }
 
 function executeEnemyGroupTurn(
@@ -597,46 +935,53 @@ function executeEnemyGroupTurn(
   intent: EnemyIntentCard | undefined
 ): GameState {
   if (!intent) return state;
-
-  let current = { ...state };
-  const matchingEnemies = current.enemies.filter(
-    (e) => e.enemyType === enemyType && e.hp > 0
+  const matching = state.enemies.filter(
+    (enemy) =>
+      enemy.enemyType === enemyType &&
+      enemy.hp > 0 &&
+      !enemy.isSummon &&
+      !!getTileAt(state.tiles, enemy)?.revealed
   );
 
-  for (const enemy of matchingEnemies) {
+  for (const enemy of matching) {
+    const noted = expiringNow(enemy.statuses);
     if (enemy.statuses.includes('wound')) {
       enemy.hp = Math.max(0, enemy.hp - 1);
-      current.combatLog.push(`${enemy.name} suffers 1 damage from Wound.`);
-      if (enemy.hp <= 0) continue;
+      state.combatLog.push(`${enemy.name} suffers 1 damage from Wound.`);
     }
-
-    if (enemy.statuses.includes('stun')) {
-      current.combatLog.push(`${enemy.name} is Stunned and skips their turn.`);
-      enemy.statuses = enemy.statuses.filter((s) => s !== 'stun');
+    if (enemy.hp <= 0) {
+      expireNoted(enemy, noted);
+      state.combatLog.push(`${enemy.name} was defeated!`);
       continue;
     }
-
+    if (noted.includes('stun')) {
+      expireNoted(enemy, noted);
+      state.combatLog.push(`${enemy.name} is Stunned and skips their turn.`);
+      continue;
+    }
     if (intent.healSelf && intent.healSelf > 0) {
       enemy.hp = Math.min(enemy.maxHp, enemy.hp + intent.healSelf);
     }
-    if (intent.shieldBonus && intent.shieldBonus > 0) {
-      enemy.tempShield += intent.shieldBonus;
-    }
+    if (intent.shieldBonus && intent.shieldBonus > 0) enemy.tempShield += intent.shieldBonus;
     if (intent.infuse) {
-      current.elements[intent.infuse] = 'strong';
+      state.elements = { ...state.elements, [intent.infuse]: 'strong' };
     }
-
-    current = resolveEnemyMovementAndAttack(current, enemy, intent);
+    resolveEnemyAction(state, enemy, intent);
+    expireNoted(enemy, noted);
   }
 
-  return current;
+  return state;
+}
+
+function roomsRevealed(state: GameState, roomIds: number[]): boolean {
+  return roomIds.every((roomId) => state.tiles.some((tile) => tile.roomId === roomId && tile.revealed));
 }
 
 function evaluateScenarioObjectives(state: GameState): GameState {
-  const scenario = SCENARIO_BY_ID[state.scenarioId] || SCENARIOS[0];
-  const livingHeroes = state.heroes.filter((h) => !h.exhausted);
+  const scenario = scenarioOf(state);
+  if (!scenario) return state;
 
-  if (livingHeroes.length === 0) {
+  if (livingHeroes(state).length === 0) {
     return {
       ...state,
       phase: 'PHASE_SCENARIO_DEFEAT',
@@ -644,128 +989,125 @@ function evaluateScenarioObjectives(state: GameState): GameState {
     };
   }
 
-  if (scenario.roundLimit && state.round >= scenario.roundLimit) {
-    return {
-      ...state,
-      phase: 'PHASE_SCENARIO_DEFEAT',
-      combatLog: [...state.combatLog, `Round limit of ${scenario.roundLimit} reached. Scenario defeated!`],
-    };
-  }
-
+  const hostiles = state.enemies.filter((enemy) => enemy.hp > 0 && !enemy.isSummon);
   let objectiveMet = false;
   if (scenario.objectiveType === 'kill_all_and_loot_chest') {
-    const enemiesAlive = state.enemies.filter((e) => e.hp > 0).length;
-    objectiveMet = enemiesAlive === 0 && state.chestLootedInScenario;
+    const rooms = Array.from(new Set(scenario.enemySpawns.map((spawn) => spawn.roomId)));
+    objectiveMet = roomsRevealed(state, rooms) && hostiles.length === 0 && state.chestLootedInScenario;
   } else if (scenario.objectiveType === 'destroy_resonators') {
-    const resonatorsAlive = state.enemies.filter(
-      (e) => e.isObjectiveStructure && e.hp > 0
-    ).length;
-    objectiveMet = resonatorsAlive === 0;
+    const rooms = Array.from(
+      new Set(
+        scenario.enemySpawns
+          .filter((spawn) => ENEMY_ARCHETYPES[spawn.enemyType]?.isObjectiveStructure)
+          .map((spawn) => spawn.roomId)
+      )
+    );
+    const alive = state.enemies.some((enemy) => enemy.isObjectiveStructure && enemy.hp > 0);
+    objectiveMet = rooms.length > 0 && roomsRevealed(state, rooms) && !alive;
   } else if (scenario.objectiveType === 'kill_boss') {
-    const bossAlive = state.enemies.filter((e) => e.isBoss && e.hp > 0).length;
-    objectiveMet = bossAlive === 0;
+    const rooms = Array.from(
+      new Set(
+        scenario.enemySpawns
+          .filter((spawn) => ENEMY_ARCHETYPES[spawn.enemyType]?.isBoss)
+          .map((spawn) => spawn.roomId)
+      )
+    );
+    const alive = state.enemies.some((enemy) => enemy.isBoss && enemy.hp > 0);
+    objectiveMet = rooms.length > 0 && roomsRevealed(state, rooms) && !alive;
   }
 
-  if (objectiveMet) {
-    const nextHeroes = state.heroes.map((h) => ({
-      ...h,
-      xp: h.xp + scenario.rewardXp,
-    }));
+  if (!objectiveMet) return state;
 
-    return {
-      ...state,
-      phase: 'PHASE_SCENARIO_VICTORY',
-      salvage: state.salvage + scenario.rewardSalvage,
-      heroes: nextHeroes,
-      combatLog: [
-        ...state.combatLog,
-        `Scenario victory! Earned ${scenario.rewardSalvage} salvage and ${scenario.rewardXp} XP.`,
-      ],
-    };
+  return {
+    ...state,
+    phase: 'PHASE_SCENARIO_VICTORY',
+    salvage: state.salvage + scenario.rewardSalvage,
+    heroes: state.heroes.map((hero) => ({ ...hero, xp: hero.xp + scenario.rewardXp })),
+    combatLog: [
+      ...state.combatLog,
+      `Scenario victory! Earned ${scenario.rewardSalvage} salvage and ${scenario.rewardXp} XP.`,
+    ],
+  };
+}
+
+function refreshSpentRelics(hero: HeroUnitState): HeroUnitState['equippedRelics'] {
+  return hero.equippedRelics
+    .filter((relic) => relic.relicId !== BOOTS_MARKER && !relic.relicId.startsWith(MOVE_BONUS_PREFIX))
+    .map((relic) => {
+      const def = RELIC_BY_ID[relic.relicId];
+      return def && def.usageType === 'spent' ? { ...relic, used: false } : relic;
+    });
+}
+
+function performLongRest(state: GameState, hero: HeroUnitState) {
+  hero.hp = Math.min(hero.maxHp, hero.hp + 2);
+  hero.statuses = hero.statuses.filter((status) => status !== 'poison' && status !== 'wound');
+  if (hero.discard.length > 0) {
+    hero.lost.push(hero.discard[0]);
+    hero.hand.push(...hero.discard.slice(1));
+    hero.discard = [];
   }
-
-  return state;
+  hero.equippedRelics = refreshSpentRelics(hero);
+  hero.longRestDeclared = false;
+  hero.selectedCards = null;
+  state.combatLog.push(`${hero.name} completed a Long Rest.`);
 }
 
 function endRoundCleanup(state: GameState): GameState {
-  let nextState = { ...state };
+  const scenario = scenarioOf(state);
+  const elements = { ...state.elements };
+  (Object.keys(elements) as ElementType[]).forEach((element) => {
+    if (elements[element] === 'strong') elements[element] = 'waning';
+    else if (elements[element] === 'waning') elements[element] = 'inert';
+  });
 
-  const decayedElements = { ...nextState.elements };
-  const elementKeys: ElementType[] = ['steam', 'volt', 'aether', 'mire'];
-  for (const el of elementKeys) {
-    if (decayedElements[el] === 'strong') {
-      decayedElements[el] = 'waning';
-    } else if (decayedElements[el] === 'waning') {
-      decayedElements[el] = 'inert';
-    }
-  }
-  nextState.elements = decayedElements;
-
-  const nextHeroes = nextState.heroes.map((hero) => {
+  const heroes = state.heroes.map((hero) => {
     if (hero.exhausted) return hero;
-
-    let hp = hero.hp;
-    let hand = [...hero.hand];
-    let discard = [...hero.discard];
-    let lost = [...hero.lost];
-    let equippedRelics = hero.equippedRelics.map((r) => ({ ...r }));
-
-    if (hero.longRestDeclared) {
-      hp = Math.min(hero.maxHp, hp + 2);
-      if (discard.length > 0) {
-        lost.push(discard[0]);
-        hand.push(...discard.slice(1));
-        discard = [];
-      }
-      equippedRelics = equippedRelics.map((r) => {
-        const relicDef = RELIC_BY_ID[r.relicId];
-        return relicDef && relicDef.usageType === 'spent'
-          ? { ...r, used: false }
-          : r;
-      });
-    }
-
-    const statuses = hero.statuses.filter((s) => s !== 'immobilize' && s !== 'muddle' && s !== 'strengthen');
-
-    let exhausted: boolean = hero.exhausted;
-    if (!exhausted && hand.length < 2 && discard.length < 2) {
-      exhausted = true;
-    }
-
-    return {
+    const next = {
       ...hero,
-      hp,
+      statuses: [...hero.statuses],
+      hand: [...hero.hand],
+      discard: [...hero.discard],
+      lost: [...hero.lost],
+      equippedRelics: hero.equippedRelics.map((relic) => ({ ...relic })),
+    };
+    if (next.longRestDeclared) performLongRest(state, next);
+    const exhausted = next.hand.length < 2 && next.discard.length < 2;
+    return {
+      ...next,
       shield: 0,
       retaliate: 0,
       nextAttackBonus: 0,
-      statuses,
-      hand,
-      discard,
-      lost,
       exhausted,
       selectedCards: null,
       longRestDeclared: false,
       topUsedThisTurn: false,
       bottomUsedThisTurn: false,
-      equippedRelics,
+      equippedRelics: next.equippedRelics.filter(
+        (relic) => relic.relicId !== BOOTS_MARKER && !relic.relicId.startsWith(MOVE_BONUS_PREFIX)
+      ),
     };
   });
 
-  nextState.heroes = nextHeroes;
-
-  const nextEnemies = nextState.enemies.map((e) => ({
-    ...e,
-    tempShield: 0,
-    statuses: e.statuses.filter((s) => s !== 'immobilize' && s !== 'muddle' && s !== 'strengthen'),
-  }));
-  nextState.enemies = nextEnemies;
+  let nextState: GameState = {
+    ...state,
+    elements,
+    heroes,
+    enemies: state.enemies.map((enemy) => ({ ...enemy, tempShield: 0, statuses: [...enemy.statuses] })),
+  };
 
   nextState = evaluateScenarioObjectives(nextState);
-  if (
-    nextState.phase === 'PHASE_SCENARIO_VICTORY' ||
-    nextState.phase === 'PHASE_SCENARIO_DEFEAT'
-  ) {
-    return nextState;
+  if (isTerminal(nextState)) return nextState;
+
+  if (scenario?.roundLimit && nextState.round >= scenario.roundLimit) {
+    return {
+      ...nextState,
+      phase: 'PHASE_SCENARIO_DEFEAT',
+      combatLog: [
+        ...nextState.combatLog,
+        `Round limit of ${scenario.roundLimit} reached. Scenario defeated!`,
+      ],
+    };
   }
 
   nextState.round += 1;
@@ -774,88 +1116,139 @@ function endRoundCleanup(state: GameState): GameState {
   nextState.turnOrder = [];
   nextState.enemyIntents = {};
   nextState.pendingAction = null;
-  nextState.combatLog.push(`Round ${nextState.round} begins.`);
-
+  nextState.combatLog = [...nextState.combatLog, `Round ${nextState.round} begins.`];
   return nextState;
 }
 
-function advanceTurnOrder(state: GameState): GameState {
-  let current = { ...state };
-  let idx = current.activeTurnIndex + 1;
+function activateSummons(state: GameState, hero: HeroUnitState) {
+  const prefix = `summon_${hero.id}_`;
+  for (const summon of state.enemies) {
+    if (!summon.isSummon || summon.hp <= 0 || !summon.id.startsWith(prefix)) continue;
+    const foes = state.enemies
+      .filter(
+        (enemy) =>
+          !enemy.isSummon &&
+          enemy.hp > 0 &&
+          hexDistance(summon, enemy) <= SUMMON_RANGE &&
+          hasLineOfSight(state.tiles, summon, enemy)
+      )
+      .sort((a, b) => hexDistance(summon, a) - hexDistance(summon, b));
+    const target = foes[0];
+    if (!target) continue;
+    const hit = strike({
+      state,
+      deck: 'hero',
+      base: SUMMON_ATTACK,
+      poisoned: target.statuses.includes('poison'),
+      shield: target.baseShield + target.tempShield,
+      pierce: 0,
+      mode: 'normal',
+      targetName: target.name,
+    });
+    target.hp = Math.max(0, target.hp - hit.damage);
+    state.combatLog.push(`Coil Turret attacks ${target.name} for ${hit.damage} damage (${hit.label}).`);
+  }
+}
 
-  while (idx < current.turnOrder.length) {
-    const entry = current.turnOrder[idx];
-    if (entry.isHero) {
-      const hero = current.heroes.find((h) => h.id === entry.heroId);
-      if (hero && !hero.exhausted) {
-        current.activeTurnIndex = idx;
-        if (hero.statuses.includes('wound')) {
-          hero.hp = Math.max(0, hero.hp - 1);
-          current.combatLog.push(`${hero.name} suffers 1 damage from Wound.`);
-          if (hero.hp <= 0) {
-            hero.exhausted = true;
-            current.combatLog.push(`${hero.name} has exhausted!`);
-            current = evaluateScenarioObjectives(current);
-            if (
-              current.phase === 'PHASE_SCENARIO_VICTORY' ||
-              current.phase === 'PHASE_SCENARIO_DEFEAT'
-            ) {
-              return current;
-            }
-            idx++;
-            continue;
-          }
-        }
-        return current;
-      }
-      idx++;
-    } else if (entry.enemyType) {
-      current = executeEnemyGroupTurn(current, entry.enemyType, entry.intentCard);
-      current = evaluateScenarioObjectives(current);
-      if (
-        current.phase === 'PHASE_SCENARIO_VICTORY' ||
-        current.phase === 'PHASE_SCENARIO_DEFEAT'
-      ) {
-        return current;
-      }
-      idx++;
-    } else {
-      idx++;
+function prepareActiveHero(state: GameState, entry: RuntimeEntry): { autoSkipped: boolean } {
+  if (entry.prepared) return { autoSkipped: false };
+  entry.prepared = true;
+  const hero = state.heroes.find((candidate) => candidate.id === entry.heroId);
+  if (!hero || hero.exhausted) return { autoSkipped: true };
+
+  const noted = expiringNow(hero.statuses);
+  entry.expireStatuses = noted;
+  if (hero.statuses.includes('wound')) {
+    hero.hp = Math.max(0, hero.hp - 1);
+    state.combatLog.push(`${hero.name} suffers 1 damage from Wound.`);
+  }
+  activateSummons(state, hero);
+  if (hero.hp <= 0) {
+    exhaustHero(hero, state);
+    return { autoSkipped: true };
+  }
+  if (noted.includes('stun')) {
+    discardSelected(hero);
+    expireNoted(hero, noted);
+    hero.longRestDeclared = false;
+    hero.topUsedThisTurn = true;
+    hero.bottomUsedThisTurn = true;
+    hero.equippedRelics = hero.equippedRelics.filter((relic) => relic.relicId !== BOOTS_MARKER);
+    state.combatLog.push(`${hero.name} is Stunned and loses the turn.`);
+    return { autoSkipped: true };
+  }
+  return { autoSkipped: false };
+}
+
+function finishHeroTurn(state: GameState): GameState {
+  const entry = state.turnOrder[state.activeTurnIndex] as RuntimeEntry | undefined;
+  if (entry?.isHero) {
+    const hero = state.heroes.find((candidate) => candidate.id === entry.heroId);
+    if (hero) {
+      expireNoted(hero, entry.expireStatuses);
+      hero.topUsedThisTurn = true;
+      hero.bottomUsedThisTurn = true;
+      hero.equippedRelics = hero.equippedRelics.filter((relic) => relic.relicId !== BOOTS_MARKER);
     }
   }
+  return runTurnFrom(state, state.activeTurnIndex + 1);
+}
 
+function runTurnFrom(state: GameState, startIdx: number): GameState {
+  let current = state;
+  let idx = startIdx;
+  while (idx < current.turnOrder.length) {
+    const entry = current.turnOrder[idx] as RuntimeEntry;
+    current.activeTurnIndex = idx;
+    if (entry.isHero) {
+      if (prepareActiveHero(current, entry).autoSkipped) {
+        current = evaluateScenarioObjectives(current);
+        if (isTerminal(current)) return current;
+        idx += 1;
+        continue;
+      }
+      return current;
+    }
+    if (entry.enemyType) {
+      current = executeEnemyGroupTurn(current, entry.enemyType, entry.intentCard);
+      current = evaluateScenarioObjectives(current);
+      if (isTerminal(current)) return current;
+      idx += 1;
+      continue;
+    }
+    idx += 1;
+  }
   return endRoundCleanup(current);
 }
 
 export function lockInRoundAndReveal(state: GameState): GameState {
   if (!canLockInRound(state)) return state;
 
-  const livingEnemies = state.enemies.filter((e) => e.hp > 0);
-  const activeTypes = Array.from(new Set(livingEnemies.map((e) => e.enemyType)));
-
-  const enemyIntents: Partial<Record<string, EnemyIntentCard>> = {};
+  const current = cloneState(state);
+  const activeTypes = Array.from(
+    new Set(current.enemies.filter((enemy) => enemy.hp > 0 && !enemy.isSummon).map((enemy) => enemy.enemyType))
+  );
+  const enemyIntents: Partial<Record<EnemyTypeId, EnemyIntentCard>> = {};
   for (const type of activeTypes) {
-    const archetype = ENEMY_ARCHETYPES[type as keyof typeof ENEMY_ARCHETYPES];
-    if (archetype && archetype.intentDeck && archetype.intentDeck.length > 0) {
-      const randomCard =
-        archetype.intentDeck[Math.floor(Math.random() * archetype.intentDeck.length)];
-      enemyIntents[type] = randomCard;
+    const archetype = ENEMY_ARCHETYPES[type];
+    if (archetype?.intentDeck.length) {
+      enemyIntents[type] = archetype.intentDeck[Math.floor(Math.random() * archetype.intentDeck.length)];
     }
   }
 
   const turnEntries: TurnOrderEntry[] = [];
-
-  for (const hero of state.heroes) {
+  for (const hero of current.heroes) {
     if (hero.exhausted) continue;
-
-    let initiative = 99;
-    if (!hero.longRestDeclared && hero.selectedCards && hero.selectedCards[0]) {
-      const leadCard = hero.hand.find((c) => c.id === hero.selectedCards![0]);
-      if (leadCard) {
-        initiative = leadCard.initiative;
-      }
+    if (!hero.longRestDeclared && hero.hand.length < 2 && hero.discard.length < 2) {
+      hero.exhausted = true;
+      current.combatLog.push(`${hero.name} has exhausted!`);
+      continue;
     }
-
+    let initiative = 99;
+    if (!hero.longRestDeclared && hero.selectedCards?.[0]) {
+      const lead = hero.hand.find((card) => card.id === hero.selectedCards?.[0]);
+      if (lead) initiative = lead.initiative;
+    }
     turnEntries.push({
       id: hero.id,
       isHero: true,
@@ -865,82 +1258,36 @@ export function lockInRoundAndReveal(state: GameState): GameState {
       acted: false,
     });
   }
-
   for (const type of activeTypes) {
-    const archetype = ENEMY_ARCHETYPES[type as keyof typeof ENEMY_ARCHETYPES];
     const intent = enemyIntents[type];
     turnEntries.push({
       id: `enemy_group_${type}`,
       isHero: false,
       enemyType: type,
-      name: archetype ? archetype.name : type,
+      name: ENEMY_ARCHETYPES[type]?.name || type,
       initiative: intent ? intent.initiative : 50,
       intentCard: intent,
       acted: false,
     });
   }
-
   turnEntries.sort((a, b) => {
-    if (a.initiative !== b.initiative) {
-      return a.initiative - b.initiative;
-    }
-    if (a.isHero !== b.isHero) {
-      return a.isHero ? -1 : 1;
-    }
+    if (a.initiative !== b.initiative) return a.initiative - b.initiative;
+    if (a.isHero !== b.isHero) return a.isHero ? -1 : 1;
     return 0;
   });
 
-  const nextHeroes = state.heroes.map((h) => ({
-    ...h,
-    topUsedThisTurn: false,
-    bottomUsedThisTurn: false,
-  }));
-
-  let nextState: GameState = {
-    ...state,
-    phase: 'PHASE_TURN_EXECUTION',
-    enemyIntents,
-    turnOrder: turnEntries,
-    activeTurnIndex: 0,
-    heroes: nextHeroes,
-    combatLog: [
-      ...state.combatLog,
-      'Initiative revealed. Turn execution phase begins.',
-    ],
-  };
-
-  const firstEntry = turnEntries[0];
-  if (!firstEntry) {
-    return endRoundCleanup(nextState);
+  current.phase = 'PHASE_TURN_EXECUTION';
+  current.enemyIntents = enemyIntents;
+  current.turnOrder = turnEntries;
+  current.activeTurnIndex = 0;
+  current.pendingAction = null;
+  for (const hero of current.heroes) {
+    hero.topUsedThisTurn = false;
+    hero.bottomUsedThisTurn = false;
   }
-
-  if (firstEntry.isHero) {
-    const hero = nextState.heroes.find((h) => h.id === firstEntry.heroId);
-    if (hero && hero.statuses.includes('wound')) {
-      hero.hp = Math.max(0, hero.hp - 1);
-      nextState.combatLog.push(`${hero.name} suffers 1 damage from Wound.`);
-      if (hero.hp <= 0) {
-        hero.exhausted = true;
-        return advanceTurnOrder(nextState);
-      }
-    }
-    return nextState;
-  }
-
-  nextState = executeEnemyGroupTurn(
-    nextState,
-    firstEntry.enemyType!,
-    firstEntry.intentCard
-  );
-  nextState = evaluateScenarioObjectives(nextState);
-  if (
-    nextState.phase === 'PHASE_SCENARIO_VICTORY' ||
-    nextState.phase === 'PHASE_SCENARIO_DEFEAT'
-  ) {
-    return nextState;
-  }
-
-  return advanceTurnOrder(nextState);
+  current.combatLog.push('Initiative revealed. Turn execution phase begins.');
+  if (turnEntries.length === 0) return endRoundCleanup(current);
+  return runTurnFrom(current, 0);
 }
 
 export function setPendingHeroAction(
@@ -953,398 +1300,409 @@ export function setPendingHeroAction(
   };
 }
 
-export function getValidTargetHexes(
-  state: GameState,
-  pending: PendingActionSelection
-): HexCoord[] {
-  const hero = state.heroes.find((h) => h.id === pending.heroId);
-  if (!hero || hero.exhausted) return [];
+function consumeReady(state: GameState, pending: PendingActionSelection, half: AbilityHalf | null): boolean {
+  if (!pending.consumeElement || !half?.consume || pending.useBasicInstead) return false;
+  return elementReady(state.elements, half.consume.element);
+}
 
-  const card = hero.hand.find((c) => c.id === pending.cardId);
-  const halfDef = card ? (pending.half === 'top' ? card.top : card.bottom) : null;
-  const isBasic = pending.useBasicInstead;
+function hexesFromKeys(keys: Iterable<string>): HexCoord[] {
+  return Array.from(keys).map((key) => {
+    const [q, r] = key.split(',').map(Number);
+    return { q, r };
+  });
+}
 
-  const actionType = isBasic
+export function getValidTargetHexes(state: GameState, pending: PendingActionSelection): HexCoord[] {
+  const hero = state.heroes.find((candidate) => candidate.id === pending.heroId);
+  if (!hero || hero.exhausted || hero.hp <= 0) return [];
+
+  const card = hero.hand.find((candidate) => candidate.id === pending.cardId);
+  const half = card ? (pending.half === 'top' ? card.top : card.bottom) : null;
+  const activeHalf = pending.useBasicInstead ? null : half;
+  const actionType = pending.useBasicInstead
     ? pending.half === 'top'
       ? 'attack'
       : 'move'
-    : halfDef
-    ? halfDef.type
-    : 'utility';
+    : activeHalf?.type || 'utility';
+  const consume = consumeReady(state, pending, activeHalf);
+  const heroCoord = { q: hero.q, r: hero.r };
 
   if (actionType === 'move') {
     if (hero.statuses.includes('immobilize')) return [];
-    let movePoints = isBasic ? 2 : halfDef?.value || 0;
-    if (pending.consumeElement && halfDef?.consume?.bonusMove) {
-      movePoints += halfDef.consume.bonusMove;
-    }
-
+    const buff = readMoveBuff(hero);
+    const movePoints = (pending.useBasicInstead ? 2 : activeHalf?.value || 0) + (consume ? activeHalf?.consume?.bonusMove || 0 : 0) + buff.bonus;
     const reachable = getReachableHexes({
-      start: { q: hero.q, r: hero.r },
+      start: heroCoord,
       maxMove: movePoints,
-      jump: isBasic ? false : !!halfDef?.jump,
+      jump: pending.useBasicInstead ? buff.jump : !!activeHalf?.jump || buff.jump,
       tiles: state.tiles,
       occupiedByAllies: state.heroes
-        .filter((h) => !h.exhausted && h.id !== hero.id)
-        .map((h) => ({ q: h.q, r: h.r })),
-      occupiedByEnemies: state.enemies
-        .filter((e) => e.hp > 0)
-        .map((e) => ({ q: e.q, r: e.r })),
+        .filter((ally) => !ally.exhausted && ally.id !== hero.id)
+        .map((ally) => ({ q: ally.q, r: ally.r })),
+      occupiedByEnemies: state.enemies.filter((enemy) => enemy.hp > 0).map((enemy) => ({ q: enemy.q, r: enemy.r })),
     });
-
-    return Array.from(reachable.keys()).map((key) => {
-      const [q, r] = key.split(',').map(Number);
-      return { q, r };
-    });
+    return hexesFromKeys(reachable.keys()).filter((coord) => !coordsEqual(coord, heroCoord));
   }
 
   if (actionType === 'attack') {
-    const range = isBasic ? 1 : halfDef?.range || 1;
-    const heroCoord = { q: hero.q, r: hero.r };
-
+    const range = pending.useBasicInstead ? 1 : activeHalf?.range || 1;
     return state.enemies
       .filter((enemy) => {
-        if (enemy.hp <= 0) return false;
-        const enemyCoord = { q: enemy.q, r: enemy.r };
-        const dist = hexDistance(heroCoord, enemyCoord);
-        if (dist > range) return false;
-        return hasLineOfSight(state.tiles, heroCoord, enemyCoord);
+        if (enemy.hp <= 0 || enemy.isSummon) return false;
+        const dist = hexDistance(heroCoord, enemy);
+        return dist <= range && hasLineOfSight(state.tiles, heroCoord, enemy);
       })
       .map((enemy) => ({ q: enemy.q, r: enemy.r }));
   }
 
-  if (actionType === 'heal' || actionType === 'shield') {
-    const range = halfDef?.range || 1;
-    const heroCoord = { q: hero.q, r: hero.r };
-
+  if (actionType === 'heal' || (actionType === 'shield' && (activeHalf?.range || 0) > 0)) {
+    const range = activeHalf?.range || 1;
     return state.heroes
       .filter((ally) => {
-        if (ally.exhausted) return false;
-        const allyCoord = { q: ally.q, r: ally.r };
-        const dist = hexDistance(heroCoord, allyCoord);
-        if (dist > range) return false;
-        return hasLineOfSight(state.tiles, heroCoord, allyCoord);
+        if (ally.exhausted || ally.hp <= 0) return false;
+        const dist = hexDistance(heroCoord, ally);
+        return dist <= range && hasLineOfSight(state.tiles, heroCoord, ally);
       })
       .map((ally) => ({ q: ally.q, r: ally.r }));
   }
 
-  if (actionType === 'summon') {
-    const neighbors = hexNeighbors({ q: hero.q, r: hero.r });
-    const allyHexes = new Set(
-      state.heroes.filter((h) => !h.exhausted).map((h) => coordKey(h))
-    );
-    const enemyHexes = new Set(
-      state.enemies.filter((e) => e.hp > 0).map((e) => coordKey(e))
-    );
+  if (actionType === 'shield') {
+    return [heroCoord];
+  }
 
-    return neighbors.filter((n) => {
-      const tile = getTileAt(state.tiles, n);
+  if (actionType === 'summon' || isPlaceTrap(activeHalf)) {
+    const occupied = occupiedKeys(state);
+    return hexNeighbors(heroCoord).filter((coord) => {
+      const tile = getTileAt(state.tiles, coord);
       if (!tile || !tile.revealed) return false;
-      if (tile.terrain === 'wall' || tile.terrain === 'obstacle') return false;
-      const key = coordKey(n);
-      return !allyHexes.has(key) && !enemyHexes.has(key);
+      if (tile.terrain === 'wall' || tile.terrain === 'obstacle' || tile.terrain === 'trap') return false;
+      return !occupied.has(coordKey(coord));
     });
   }
 
-  return hexNeighbors({ q: hero.q, r: hero.r });
+  if (actionType === 'utility' && activeHalf) {
+    const range = activeHalf.range || 1;
+    if (activeHalf.disarmTrap) {
+      return state.tiles
+        .filter((tile) => {
+          if (!tile.revealed || (tile.terrain !== 'trap' && tile.terrain !== 'door')) return false;
+          const dist = hexDistance(heroCoord, tile);
+          return dist <= range && dist > 0 && hasLineOfSight(state.tiles, heroCoord, tile);
+        })
+        .map((tile) => ({ q: tile.q, r: tile.r }));
+    }
+    if (activeHalf.recoverDiscarded || activeHalf.grantAllyAttackBonus) {
+      return state.heroes
+        .filter((ally) => !ally.exhausted && ally.hp > 0 && hexDistance(heroCoord, ally) <= range)
+        .map((ally) => ({ q: ally.q, r: ally.r }));
+    }
+    if (activeHalf.statusApplied?.length) {
+      return state.enemies
+        .filter((enemy) => enemy.hp > 0 && !enemy.isSummon && hexDistance(heroCoord, enemy) <= range && hasLineOfSight(state.tiles, heroCoord, enemy))
+        .map((enemy) => ({ q: enemy.q, r: enemy.r }));
+    }
+  }
+
+  return hexNeighbors(heroCoord);
 }
 
-export function executeHeroActionOnHex(
-  state: GameState,
-  target: HexCoord
-): GameState {
+function applyConsumeBonus(state: GameState, half: AbilityHalf, consume: boolean, actor: HeroUnitState, target?: FightUnit) {
+  const bonus = half.consume?.bonusStatus;
+  if (!consume || !bonus) return;
+  if (bonus === 'strengthen') {
+    addStatus(actor, 'strengthen');
+    return;
+  }
+  if (!target) return;
+  addStatus(target, bonus);
+  if (half.consume?.bonusDescription.toLowerCase().includes('adjacent')) {
+    for (const enemy of state.enemies) {
+      if (enemy.hp <= 0 || enemy.id === target.id || enemy.isSummon) continue;
+      if (hexDistance(target, enemy) === 1) addStatus(enemy, bonus);
+    }
+  }
+}
+
+function heroMove(state: GameState, hero: HeroUnitState, target: HexCoord, half: AbilityHalf | null) {
+  hero.q = target.q;
+  hero.r = target.r;
+  consumeMoveBuffs(hero);
+  const tile = getTileAt(state.tiles, target);
+  if (!tile) return;
+  if (tile.terrain === 'hazard') {
+    hero.hp = Math.max(0, hero.hp - 2);
+    state.combatLog.push(`${hero.name} stepped into scalding steam! Suffered 2 damage.`);
+  } else if (tile.terrain === 'trap') {
+    hero.hp = Math.max(0, hero.hp - 3);
+    addStatus(hero, 'immobilize');
+    tile.terrain = 'floor';
+    state.combatLog.push(`${hero.name} triggered a scrap trap! Suffered 3 damage and Immobilized.`);
+  } else if (tile.terrain === 'chest') {
+    const salvage = tile.salvageValue || 15;
+    state.salvage += salvage;
+    state.chestLootedInScenario = true;
+    tile.terrain = 'floor';
+    state.combatLog.push(`${hero.name} looted a Relic Chest! Gained ${salvage} salvage.`);
+  } else if (tile.terrain === 'door') {
+    openDoor(state, target);
+  } else if (tile.terrain === 'lore' && !tile.interacted && tile.loreId) {
+    const loreNode = scenarioOf(state).loreNodes?.[tile.loreId];
+    if (loreNode) {
+      state.activeLoreModal = { loreNode, heroId: hero.id, tileCoord: { q: target.q, r: target.r } };
+    }
+  }
+  if (half?.disarmTrap) {
+    const trap = state.tiles.find(
+      (candidate) => candidate.terrain === 'trap' && hexNeighbors(hero).some((coord) => coordsEqual(coord, candidate))
+    );
+    if (trap) {
+      trap.terrain = 'floor';
+      state.combatLog.push(`${hero.name} disarmed a trap.`);
+    }
+  }
+}
+
+export function executeHeroActionOnHex(state: GameState, target: HexCoord): GameState {
   if (!state.pendingAction) return state;
+  const pending = state.pendingAction;
+  const current = cloneState(state);
+  const hero = current.heroes.find((candidate) => candidate.id === pending.heroId);
+  if (!hero || hero.exhausted || hero.hp <= 0) return state;
+  if ((pending.half === 'top' && hero.topUsedThisTurn) || (pending.half === 'bottom' && hero.bottomUsedThisTurn)) {
+    return state;
+  }
 
-  const { heroId, cardId, half, useBasicInstead, consumeElement } = state.pendingAction;
-  let currentState = { ...state };
-  const heroIndex = currentState.heroes.findIndex((h) => h.id === heroId);
-  if (heroIndex === -1) return state;
+  const card = hero.hand.find((candidate) => candidate.id === pending.cardId);
+  const printed = card ? (pending.half === 'top' ? card.top : card.bottom) : null;
+  const half = pending.useBasicInstead ? null : printed;
+  if (!pending.useBasicInstead && !half) return state;
+  const actionType = pending.useBasicInstead ? (pending.half === 'top' ? 'attack' : 'move') : half?.type || 'utility';
+  const consume = consumeReady(current, pending, half);
 
-  let hero = { ...currentState.heroes[heroIndex] };
-  const card = hero.hand.find((c) => c.id === cardId);
-  const halfDef = card ? (half === 'top' ? card.top : card.bottom) : null;
-
-  const actionType = useBasicInstead
-    ? half === 'top'
-      ? 'attack'
-      : 'move'
-    : halfDef
-    ? halfDef.type
-    : 'utility';
-
-  if (consumeElement && halfDef?.consume) {
-    currentState.elements = {
-      ...currentState.elements,
-      [halfDef.consume.element]: 'inert',
-    };
+  if (consume && half?.consume) {
+    current.elements = { ...current.elements, [half.consume.element]: 'inert' };
   }
 
   if (actionType === 'move') {
-    hero.q = target.q;
-    hero.r = target.r;
-
-    const tile = getTileAt(currentState.tiles, target);
-    if (tile) {
-      if (tile.terrain === 'hazard') {
-        hero.hp = Math.max(0, hero.hp - 2);
-        currentState.combatLog.push(`${hero.name} stepped into scalding steam! Suffered 2 damage.`);
-      } else if (tile.terrain === 'trap') {
-        hero.hp = Math.max(0, hero.hp - 3);
-        if (!hero.statuses.includes('immobilize')) {
-          hero.statuses.push('immobilize');
-        }
-        currentState.tiles = currentState.tiles.map((t) =>
-          coordsEqual(t, target) ? { ...t, terrain: 'floor' } : t
-        );
-        currentState.combatLog.push(`${hero.name} triggered a scrap trap! Suffered 3 damage and Immobilized.`);
-      } else if (tile.terrain === 'chest') {
-        const val = tile.salvageValue || 15;
-        currentState.salvage += val;
-        currentState.chestLootedInScenario = true;
-        currentState.tiles = currentState.tiles.map((t) =>
-          coordsEqual(t, target) ? { ...t, terrain: 'floor' } : t
-        );
-        currentState.combatLog.push(`${hero.name} looted a Relic Chest! Gained ${val} salvage.`);
-      } else if (tile.terrain === 'door' && !tile.interacted && tile.unlocksRoomId) {
-        const nextRoomId = tile.unlocksRoomId;
-        currentState.tiles = currentState.tiles.map((t) => {
-          if (coordsEqual(t, target)) return { ...t, interacted: true };
-          if (t.roomId === nextRoomId) return { ...t, revealed: true };
-          return t;
-        });
-
-        const scenario = SCENARIO_BY_ID[currentState.scenarioId] || SCENARIOS[0];
-        const newEnemies = (scenario.enemySpawns || [])
-          .filter((s) => s.roomId === nextRoomId)
-          .map((s, idx) => {
-            const arch = ENEMY_ARCHETYPES[s.enemyType];
-            return {
-              id: `enemy_${s.enemyType}_r${nextRoomId}_${idx}`,
-              unitType: 'enemy' as const,
-              enemyType: s.enemyType,
-              name: arch ? arch.name : s.enemyType,
-              q: s.q,
-              r: s.r,
-              roomId: s.roomId,
-              hp: arch ? arch.maxHp : 5,
-              maxHp: arch ? arch.maxHp : 5,
-              baseShield: arch ? arch.baseShield : 0,
-              tempShield: 0,
-              hover: arch ? !!arch.hover : false,
-              isBoss: arch ? !!arch.isBoss : false,
-              isObjectiveStructure: arch ? !!arch.isObjectiveStructure : false,
-              immunities: arch && arch.immunities ? [...arch.immunities] : [],
-              statuses: [] as StatusEffect[],
-            };
-          });
-
-        currentState.enemies = [...currentState.enemies, ...newEnemies];
-        currentState.combatLog.push(`Door breached! Room ${nextRoomId} revealed.`);
-      } else if (tile.terrain === 'lore' && !tile.interacted && tile.loreId) {
-        const scenario = SCENARIO_BY_ID[currentState.scenarioId] || SCENARIOS[0];
-        const loreNode = scenario.loreNodes ? scenario.loreNodes[tile.loreId] : null;
-        if (loreNode) {
-          currentState.activeLoreModal = {
-            loreNode,
-            heroId: hero.id,
-            tileCoord: target,
-          };
-        }
+    if (hero.statuses.includes('immobilize')) {
+      current.combatLog.push(`${hero.name} is Immobilized and cannot move.`);
+    } else {
+      heroMove(current, hero, target, half);
+      if (half?.push || half?.pull) {
+        const reach = half.range && half.range > 0 ? half.range : 1;
+        const foe = current.enemies
+          .filter(
+            (enemy) =>
+              enemy.hp > 0 &&
+              !enemy.isSummon &&
+              hexDistance(hero, enemy) > 0 &&
+              hexDistance(hero, enemy) <= reach
+          )
+          .sort((a, b) => hexDistance(hero, a) - hexDistance(hero, b) || a.id.localeCompare(b.id))[0];
+        if (foe && half.push) forceMove(current, foe, hero, half.push, 'push');
+        if (foe && half.pull) forceMove(current, foe, hero, half.pull, 'pull');
       }
+    }
+  } else if (actionType === 'attack' && half) {
+    const pattern = half.aoePattern && half.aoePattern !== 'single' ? half.aoePattern : null;
+    const hexes = pattern ? getAoeHexes({ q: hero.q, r: hero.r }, target, pattern) : [target];
+    const base =
+      (pending.useBasicInstead ? 2 : half.value || 0) +
+      hero.nextAttackBonus +
+      (consume ? half.consume?.bonusAttack || 0 : 0);
+    hero.nextAttackBonus = 0;
+    const allies = current.heroes
+      .filter((ally) => !ally.exhausted && ally.id !== hero.id)
+      .map((ally) => ({ q: ally.q, r: ally.r }));
+    const pierce = (half.pierce || 0) + (consume ? half.consume?.bonusPierce || 0 : 0);
+
+    for (const hex of hexes) {
+      const enemy = current.enemies.find((candidate) => candidate.hp > 0 && !candidate.isSummon && coordsEqual(candidate, hex));
+      if (!enemy) continue;
+      const mode = modifierMode(
+        isFlanked(hero, hex, allies) || hero.statuses.includes('strengthen'),
+        hasCover(hero, hex, current.tiles) || hero.statuses.includes('muddle')
+      );
+      const hit = strike({
+        state: current,
+        deck: 'hero',
+        base,
+        poisoned: enemy.statuses.includes('poison'),
+        shield: enemy.baseShield + enemy.tempShield,
+        pierce,
+        mode,
+        targetName: enemy.name,
+      });
+      enemy.hp = Math.max(0, enemy.hp - hit.damage);
+      current.combatLog.push(`${hero.name} attacks ${enemy.name} for ${hit.damage} damage (${hit.label}).`);
+      if (!hit.missed) {
+        for (const status of half.statusApplied || []) addStatus(enemy, status);
+        applyConsumeBonus(current, half, consume, hero, enemy);
+        if (half.push) forceMove(current, enemy, hero, half.push, 'push');
+        if (half.pull) forceMove(current, enemy, hero, half.pull, 'pull');
+      }
+      if (enemy.hp <= 0) current.combatLog.push(`${enemy.name} was defeated!`);
     }
   } else if (actionType === 'attack') {
-    let affectedHexes: HexCoord[] = [target];
-    if (!useBasicInstead && halfDef?.aoePattern && halfDef.aoePattern !== 'single') {
-      affectedHexes = getAoeHexes({ q: hero.q, r: hero.r }, target, halfDef.aoePattern);
-    }
-
-    const baseVal = useBasicInstead
-      ? 2
-      : (halfDef?.value || 0) +
-        hero.nextAttackBonus +
-        (consumeElement && halfDef?.consume?.bonusAttack ? halfDef.consume.bonusAttack : 0);
-
+    const bonus = hero.nextAttackBonus;
     hero.nextAttackBonus = 0;
-
-    const allyCoords = currentState.heroes
-      .filter((h) => !h.exhausted && h.id !== hero.id)
-      .map((h) => ({ q: h.q, r: h.r }));
-
-    for (const hCoord of affectedHexes) {
-      const targetEnemy = currentState.enemies.find(
-        (e) => e.hp > 0 && coordsEqual({ q: e.q, r: e.r }, hCoord)
+    const allies = current.heroes
+      .filter((ally) => !ally.exhausted && ally.id !== hero.id)
+      .map((ally) => ({ q: ally.q, r: ally.r }));
+    const enemy = current.enemies.find((candidate) => candidate.hp > 0 && !candidate.isSummon && coordsEqual(candidate, target));
+    if (enemy) {
+      const mode = modifierMode(
+        isFlanked(hero, enemy, allies) || hero.statuses.includes('strengthen'),
+        hero.statuses.includes('muddle') || hasCover(hero, enemy, current.tiles)
       );
-      if (!targetEnemy) continue;
-
-      const flanked = isFlanked({ q: hero.q, r: hero.r }, hCoord, allyCoords);
-      const covered = hasCover({ q: hero.q, r: hero.r }, hCoord, currentState.tiles);
-      const isStrengthened = hero.statuses.includes('strengthen');
-      const isMuddled = hero.statuses.includes('muddle');
-
-      let mode: 'normal' | 'advantage' | 'disadvantage' = 'normal';
-      const adv = flanked || isStrengthened;
-      const disadv = covered || isMuddled;
-      if (adv && !disadv) mode = 'advantage';
-      else if (!adv && disadv) mode = 'disadvantage';
-
-      const { result, nextDeck, nextDiscard } = drawModifier(
-        currentState.heroModifierDeck,
-        currentState.heroModifierDiscard,
-        baseVal,
-        mode
-      );
-
-      currentState.heroModifierDeck = nextDeck;
-      currentState.heroModifierDiscard = nextDiscard;
-      currentState.lastModifierPopup = {
-        targetName: targetEnemy.name,
-        result,
-        timestamp: Date.now(),
-      };
-
-      const pierce =
-        (halfDef?.pierce || 0) +
-        (consumeElement && halfDef?.consume?.bonusPierce ? halfDef.consume.bonusPierce : 0);
-
-      const effectiveShield = Math.max(0, (targetEnemy.baseShield + targetEnemy.tempShield) - pierce);
-      let damageDealt = Math.max(0, result.finalDamage - effectiveShield);
-      if (targetEnemy.statuses.includes('poison')) {
-        damageDealt += 1;
-      }
-
-      targetEnemy.hp = Math.max(0, targetEnemy.hp - damageDealt);
-      currentState.combatLog.push(
-        `${hero.name} attacks ${targetEnemy.name} for ${damageDealt} damage (${result.chosenCard.label}).`
-      );
-
-      if (halfDef?.statusApplied) {
-        for (const st of halfDef.statusApplied) {
-          if (!targetEnemy.immunities.includes(st) && !targetEnemy.statuses.includes(st)) {
-            targetEnemy.statuses.push(st);
-          }
-        }
-      }
-      if (consumeElement && halfDef?.consume?.bonusStatus) {
-        const bStatus = halfDef.consume.bonusStatus;
-        if (!targetEnemy.immunities.includes(bStatus) && !targetEnemy.statuses.includes(bStatus)) {
-          targetEnemy.statuses.push(bStatus);
-        }
-      }
-
-      if (targetEnemy.hp <= 0) {
-        currentState.combatLog.push(`${targetEnemy.name} was defeated!`);
+      const hit = strike({
+        state: current,
+        deck: 'hero',
+        base: 2 + bonus,
+        poisoned: enemy.statuses.includes('poison'),
+        shield: enemy.baseShield + enemy.tempShield,
+        pierce: 0,
+        mode,
+        targetName: enemy.name,
+      });
+      enemy.hp = Math.max(0, enemy.hp - hit.damage);
+      current.combatLog.push(`${hero.name} attacks ${enemy.name} for ${hit.damage} damage (${hit.label}).`);
+      if (enemy.hp <= 0) current.combatLog.push(`${enemy.name} was defeated!`);
+    }
+  } else if (actionType === 'heal' && half) {
+    const amount = (half.value || 0) + (consume ? half.consume?.bonusHeal || 0 : 0);
+    const patient = current.heroes.find((ally) => !ally.exhausted && coordsEqual(ally, target));
+    if (patient) {
+      patient.hp = Math.min(patient.maxHp, patient.hp + amount);
+      patient.statuses = patient.statuses.filter((status) => status !== 'poison' && status !== 'wound');
+      if (consume && half.consume?.bonusStatus) addStatus(patient, half.consume.bonusStatus);
+      current.combatLog.push(`${hero.name} healed ${patient.name} for ${amount} HP.`);
+    }
+  } else if (actionType === 'shield' && half) {
+    const amount = half.value || 1;
+    hero.shield += amount;
+    if ((half.range || 0) > 0) {
+      for (const ally of current.heroes) {
+        if (ally.id === hero.id || ally.exhausted || ally.hp <= 0) continue;
+        if (hexDistance(hero, ally) <= (half.range || 0)) ally.shield += amount;
       }
     }
-  } else if (actionType === 'heal') {
-    const healVal = (halfDef?.value || 0) + (consumeElement && halfDef?.consume?.bonusHeal ? halfDef.consume.bonusHeal : 0);
-    const targetHero = currentState.heroes.find(
-      (h) => !h.exhausted && coordsEqual({ q: h.q, r: h.r }, target)
-    );
-    if (targetHero) {
-      targetHero.hp = Math.min(targetHero.maxHp, targetHero.hp + healVal);
-      targetHero.statuses = targetHero.statuses.filter((s) => s !== 'poison' && s !== 'wound');
-      currentState.combatLog.push(`${hero.name} healed ${targetHero.name} for ${healVal} HP.`);
+    current.combatLog.push(`${hero.name} gained Shield ${amount} this round.`);
+  } else if (actionType === 'summon' && half) {
+    const tile = getTileAt(current.tiles, target);
+    const occupied = occupiedKeys(current);
+    if (tile && tile.revealed && tile.terrain !== 'wall' && tile.terrain !== 'obstacle' && !occupied.has(coordKey(target))) {
+      const hp = half.value || 4;
+      current.enemies.push({
+        ...makeEnemy('drowned_construct', target, tile.roomId, `summon_${hero.id}_${current.enemies.length}`, hp),
+        name: 'Coil Turret',
+        isSummon: true,
+        baseShield: 0,
+        hover: false,
+        isBoss: false,
+        isObjectiveStructure: false,
+        immunities: [],
+        maxHp: hp,
+        hp,
+      });
+      current.combatLog.push(`${hero.name} deployed a Coil Turret.`);
     }
-  } else if (actionType === 'shield') {
-    hero.shield += halfDef?.value || 1;
-    currentState.combatLog.push(`${hero.name} gained Shield ${halfDef?.value || 1} this round.`);
+  } else if (actionType === 'utility' && half) {
+    if (isPlaceTrap(half)) {
+      const tile = getTileAt(current.tiles, target);
+      const occupied = occupiedKeys(current);
+      if (tile && tile.revealed && tile.terrain === 'floor' && !occupied.has(coordKey(target))) {
+        tile.terrain = 'trap';
+        current.combatLog.push(`${hero.name} placed a scrap trap.`);
+      }
+    }
+    if (half.disarmTrap) {
+      const tile = getTileAt(current.tiles, target);
+      if (tile?.terrain === 'trap') {
+        tile.terrain = 'floor';
+        current.combatLog.push(`${hero.name} disarmed a trap.`);
+      } else if (tile?.terrain === 'door') {
+        openDoor(current, target);
+      }
+    }
+    if (half.recoverDiscarded) {
+      const ally = current.heroes.find((candidate) => !candidate.exhausted && coordsEqual(candidate, target));
+      if (ally) {
+        const recovered = ally.discard.slice(0, half.recoverDiscarded);
+        ally.hand.push(...recovered);
+        ally.discard = ally.discard.slice(recovered.length);
+        current.combatLog.push(`${hero.name} recovered ${recovered.length} card(s) for ${ally.name}.`);
+      }
+    }
+    if (half.grantAllyAttackBonus) {
+      const ally = current.heroes.find((candidate) => !candidate.exhausted && coordsEqual(candidate, target));
+      if (ally) {
+        ally.nextAttackBonus += half.grantAllyAttackBonus;
+        current.combatLog.push(`${ally.name} gains +${half.grantAllyAttackBonus} Attack on their next attack.`);
+      }
+    }
+    if (half.statusApplied?.length && !isPlaceTrap(half)) {
+      const enemy = current.enemies.find((candidate) => candidate.hp > 0 && !candidate.isSummon && coordsEqual(candidate, target));
+      if (enemy) {
+        for (const status of half.statusApplied) addStatus(enemy, status);
+        applyConsumeBonus(current, half, consume, hero, enemy);
+      }
+    }
   }
 
-  if (!useBasicInstead && halfDef?.infuse) {
-    currentState.elements = {
-      ...currentState.elements,
-      [halfDef.infuse]: 'strong',
-    };
+  if (half?.selfHeal) {
+    hero.hp = Math.min(hero.maxHp, hero.hp + half.selfHeal);
+    hero.statuses = hero.statuses.filter((status) => status !== 'poison' && status !== 'wound');
+    current.combatLog.push(`${hero.name} recovers ${half.selfHeal} HP.`);
+  }
+  if (half?.retaliate) hero.retaliate += half.retaliate;
+  if (half?.grantAllyMove) grantMoveBonus(current, hero, half.grantAllyMove, half.range);
+  if (half && consume && (actionType === 'move' || actionType === 'shield')) {
+    applyConsumeBonus(current, half, true, hero);
+  }
+  if (half?.infuse) current.elements = { ...current.elements, [half.infuse]: 'strong' };
+  if (half?.xp) hero.xp += half.xp;
+
+  if (pending.half === 'top') hero.topUsedThisTurn = true;
+  else hero.bottomUsedThisTurn = true;
+
+  if (card) {
+    hero.hand = hero.hand.filter((candidate) => candidate.id !== card.id);
+    if (half?.burn) {
+      hero.lost.push(card);
+      current.combatLog.push(`${hero.name} burned ${card.name}!`);
+    } else {
+      hero.discard.push(card);
+    }
   }
 
-  if (!useBasicInstead && halfDef?.xp) {
-    hero.xp += halfDef.xp;
+  current.pendingAction = null;
+  exhaustHero(hero, current);
+  let next = evaluateScenarioObjectives(current);
+  if (isTerminal(next)) return next;
+  if (hero.hp <= 0 || (hero.topUsedThisTurn && hero.bottomUsedThisTurn && !next.activeLoreModal)) {
+    return finishHeroTurn(next);
   }
-
-  if (half === 'top') {
-    hero.topUsedThisTurn = true;
-  } else {
-    hero.bottomUsedThisTurn = true;
-  }
-
-  hero.hand = hero.hand.filter((c) => c.id !== cardId);
-  if (!useBasicInstead && halfDef?.burn) {
-    hero.lost.push(card!);
-    currentState.combatLog.push(`${hero.name} burned ${card!.name}!`);
-  } else if (card) {
-    hero.discard.push(card);
-  }
-
-  currentState.heroes[heroIndex] = hero;
-  currentState.pendingAction = null;
-  currentState = evaluateScenarioObjectives(currentState);
-
-  if (
-    currentState.phase === 'PHASE_SCENARIO_VICTORY' ||
-    currentState.phase === 'PHASE_SCENARIO_DEFEAT'
-  ) {
-    return currentState;
-  }
-
-  if (
-    hero.topUsedThisTurn &&
-    hero.bottomUsedThisTurn &&
-    !currentState.activeLoreModal
-  ) {
-    return advanceTurnOrder(currentState);
-  }
-
-  return currentState;
+  return next;
 }
 
 export function skipOrEndActiveTurn(state: GameState): GameState {
   if (state.phase !== 'PHASE_TURN_EXECUTION') return state;
+  const current = cloneState(state);
+  const entry = current.turnOrder[current.activeTurnIndex] as RuntimeEntry | undefined;
+  if (!entry || !entry.isHero) return runTurnFrom(current, (current.activeTurnIndex || 0) + 1);
 
-  const currentEntry = state.turnOrder[state.activeTurnIndex];
-  if (!currentEntry || !currentEntry.isHero) {
-    return advanceTurnOrder(state);
+  if (prepareActiveHero(current, entry).autoSkipped) {
+    const checked = evaluateScenarioObjectives(current);
+    if (isTerminal(checked)) return checked;
+    return runTurnFrom(checked, checked.activeTurnIndex + 1);
   }
 
-  let currentState = { ...state };
-  const heroIndex = currentState.heroes.findIndex((h) => h.id === currentEntry.heroId);
-  if (heroIndex === -1) return advanceTurnOrder(state);
-
-  const hero = { ...currentState.heroes[heroIndex] };
-
-  if (hero.longRestDeclared) {
-    hero.hp = Math.min(hero.maxHp, hero.hp + 2);
-    hero.statuses = hero.statuses.filter((s) => s !== 'poison' && s !== 'wound');
-
-    if (hero.discard.length > 0) {
-      const lostCard = hero.discard[0];
-      hero.lost = [...hero.lost, lostCard];
-      hero.hand = [...hero.hand, ...hero.discard.slice(1)];
-      hero.discard = [];
-    }
-
-    hero.equippedRelics = hero.equippedRelics.map((r) => {
-      const relic = RELIC_BY_ID[r.relicId];
-      return relic && relic.usageType === 'spent' ? { ...r, used: false } : r;
-    });
-
-    currentState.combatLog.push(`${hero.name} completed a Long Rest.`);
-  } else {
-    if (hero.selectedCards) {
-      for (const cId of hero.selectedCards.filter(Boolean)) {
-        const found = hero.hand.find((c) => c.id === cId);
-        if (found) {
-          hero.hand = hero.hand.filter((c) => c.id !== cId);
-          hero.discard.push(found);
-        }
-      }
-    }
-  }
-
-  hero.topUsedThisTurn = true;
-  hero.bottomUsedThisTurn = true;
-  currentState.heroes[heroIndex] = hero;
-
-  return advanceTurnOrder(currentState);
+  const hero = current.heroes.find((candidate) => candidate.id === entry.heroId);
+  if (!hero) return runTurnFrom(current, current.activeTurnIndex + 1);
+  if (hero.longRestDeclared) performLongRest(current, hero);
+  else discardSelected(hero);
+  return finishHeroTurn(current);
 }
 
 export function useRelicItem(
@@ -1353,15 +1711,13 @@ export function useRelicItem(
   relicId: string,
   elementChoice?: ElementType
 ): GameState {
-  const heroIndex = state.heroes.findIndex((h) => h.id === heroId);
+  const heroIndex = state.heroes.findIndex((hero) => hero.id === heroId);
   if (heroIndex === -1) return state;
-
-  let current = { ...state };
-  const hero = { ...current.heroes[heroIndex] };
-  const relicEntry = hero.equippedRelics.find((r) => r.relicId === relicId);
+  const current = cloneState(state);
+  const hero = current.heroes[heroIndex];
+  const relicEntry = hero.equippedRelics.find((relic) => relic.relicId === relicId);
   if (!relicEntry || relicEntry.used) return state;
-
-  const relicDef = RELIC_BY_ID[relicId];
+  const relicDef = RELIC_BY_ID[relicId] || RELIC_ITEMS.find((relic) => relic.id === relicId);
   if (!relicDef) return state;
 
   if (relicDef.effect === 'recover_2_discard') {
@@ -1369,136 +1725,126 @@ export function useRelicItem(
     hero.hand = [...hero.hand, ...recovered];
     hero.discard = hero.discard.slice(recovered.length);
   } else if (relicDef.effect === 'move_plus_2_jump') {
-    hero.nextAttackBonus = (hero.nextAttackBonus || 0) + 2;
+    if (!hero.equippedRelics.some((relic) => relic.relicId === BOOTS_MARKER)) {
+      hero.equippedRelics.push({ relicId: BOOTS_MARKER, used: false });
+    }
   } else if (relicDef.effect === 'shield_2_round') {
     hero.shield += 2;
   } else if (relicDef.effect === 'infuse_any') {
-    const el = elementChoice || 'aether';
-    current.elements = { ...current.elements, [el]: 'strong' };
+    const element = elementChoice || 'aether';
+    current.elements = { ...current.elements, [element]: 'strong' };
   } else if (relicDef.effect === 'heal_3_cleanse') {
     hero.hp = Math.min(hero.maxHp, hero.hp + 3);
-    hero.statuses = hero.statuses.filter((s) => s !== 'poison' && s !== 'wound');
+    hero.statuses = hero.statuses.filter((status) => status !== 'poison' && status !== 'wound');
   }
 
-  hero.equippedRelics = hero.equippedRelics.map((r) =>
-    r.relicId === relicId ? { ...r, used: true } : r
+  hero.equippedRelics = hero.equippedRelics.map((relic) =>
+    relic.relicId === relicId ? { ...relic, used: true } : relic
   );
-
-  current.heroes[heroIndex] = hero;
   current.combatLog.push(`${hero.name} activated ${relicDef.name}.`);
   return current;
 }
 
-export function resolveLoreModalChoice(
-  state: GameState,
-  optionIndex: 0 | 1
-): GameState {
+export function resolveLoreModalChoice(state: GameState, optionIndex: 0 | 1): GameState {
   if (!state.activeLoreModal) return state;
-
   const { loreNode, heroId, tileCoord } = state.activeLoreModal;
   const choice = loreNode.options[optionIndex];
-  let current = { ...state };
+  if (!choice) return state;
+  const current = cloneState(state);
 
-  current.tiles = current.tiles.map((t) =>
-    coordsEqual(t, tileCoord) ? { ...t, interacted: true } : t
-  );
-
+  current.tiles = current.tiles.map((tile) => (coordsEqual(tile, tileCoord) ? { ...tile, interacted: true } : tile));
   if (choice.reputationDelta) {
     current.reputation = Math.max(-5, Math.min(5, current.reputation + choice.reputationDelta));
   }
-  if (choice.salvageDelta) {
-    current.salvage = Math.max(0, current.salvage + choice.salvageDelta);
-  }
+  if (choice.salvageDelta) current.salvage = Math.max(0, current.salvage + choice.salvageDelta);
   if (choice.hpDelta) {
-    const heroIndex = current.heroes.findIndex((h) => h.id === heroId);
-    if (heroIndex !== -1) {
-      const hero = { ...current.heroes[heroIndex] };
-      hero.hp = Math.max(1, Math.min(hero.maxHp, hero.hp + choice.hpDelta));
-      current.heroes[heroIndex] = hero;
+    const hero = current.heroes.find((candidate) => candidate.id === heroId);
+    if (hero) {
+      hero.hp = Math.max(0, Math.min(hero.maxHp, hero.hp + choice.hpDelta));
+      exhaustHero(hero, current);
     }
   }
   if (choice.infuseElements) {
-    const nextElements = { ...current.elements };
-    for (const el of choice.infuseElements) {
-      nextElements[el] = 'strong';
-    }
-    current.elements = nextElements;
+    const elements = { ...current.elements };
+    for (const element of choice.infuseElements) elements[element] = 'strong';
+    current.elements = elements;
   }
   if (choice.clearDifficultTerrainInRoom) {
     const roomId = choice.clearDifficultTerrainInRoom;
-    current.tiles = current.tiles.map((t) =>
-      t.roomId === roomId && t.terrain === 'difficult'
-        ? { ...t, terrain: 'floor' }
-        : t
+    current.tiles = current.tiles.map((tile) =>
+      tile.roomId === roomId && tile.terrain === 'difficult' ? { ...tile, terrain: 'floor' } : tile
+    );
+  }
+  if (choice.spawnEnemyInRoom) {
+    const spawn = choice.spawnEnemyInRoom;
+    const revealed = current.tiles.some((tile) => tile.roomId === spawn.roomId && tile.revealed);
+    const id = `${revealed ? 'alive' : 'pending'}_${spawn.roomId}_${spawn.q}_${spawn.r}_${spawn.enemyType}`;
+    current.enemies.push(
+      makeEnemy(spawn.enemyType, { q: spawn.q, r: spawn.r }, spawn.roomId, id, revealed ? undefined : 0)
     );
   }
   if (choice.stripBossPermanentShield) {
     current.pylonsActivated = (current.pylonsActivated || 0) + 1;
     if (current.pylonsActivated >= 2) {
-      current.enemies = current.enemies.map((e) =>
-        e.isBoss ? { ...e, baseShield: 0 } : e
-      );
+      current.enemies = current.enemies.map((enemy) => (enemy.isBoss ? { ...enemy, baseShield: 0 } : enemy));
       current.combatLog.push('Ancient Pylons fully activated! Boss shield shattered.');
     }
   }
-  if (choice.unlockRelicId) {
-    if (!current.unlockedRelicIds.includes(choice.unlockRelicId)) {
-      current.unlockedRelicIds = [...current.unlockedRelicIds, choice.unlockRelicId];
-    }
+  if (choice.unlockRelicId && !current.unlockedRelicIds.includes(choice.unlockRelicId)) {
+    current.unlockedRelicIds = [...current.unlockedRelicIds, choice.unlockRelicId];
   }
 
   current.combatLog.push(choice.outcomeText);
   current.activeLoreModal = null;
-
-  const activeHero = current.heroes.find((h) => h.id === heroId);
-  if (activeHero && activeHero.topUsedThisTurn && activeHero.bottomUsedThisTurn) {
-    return advanceTurnOrder(current);
+  let next = evaluateScenarioObjectives(current);
+  if (isTerminal(next)) return next;
+  const actor = next.heroes.find((hero) => hero.id === heroId);
+  if (actor && actor.topUsedThisTurn && actor.bottomUsedThisTurn && !actor.exhausted) {
+    return finishHeroTurn(next);
   }
+  return next;
+}
 
+export function buyRelicInOutpost(state: GameState, heroId: string, relicId: string): GameState {
+  if (state.screen !== 'outpost') return state;
+  const heroIndex = state.heroes.findIndex((hero) => hero.id === heroId);
+  if (heroIndex === -1) return state;
+  const relicDef = RELIC_BY_ID[relicId] || RELIC_ITEMS.find((relic) => relic.id === relicId);
+  if (!relicDef) return state;
+  if (!state.unlockedRelicIds.includes(relicId)) return state;
+
+  const current = cloneState(state);
+  const hero = current.heroes[heroIndex];
+  if (hero.equippedRelics.some((relic) => relic.relicId === relicId)) return state;
+
+  const discount = current.reputation >= 2 ? 0.8 : 1;
+  const finalCost = Math.floor(relicDef.cost * discount);
+  if (current.salvage < finalCost) return state;
+
+  hero.equippedRelics = [...hero.equippedRelics, { relicId, used: false }];
+  current.salvage -= finalCost;
+  current.combatLog.push(`${hero.name} purchased ${relicDef.name} for ${finalCost} salvage.`);
   return current;
 }
 
-export function buyRelicInOutpost(
-  state: GameState,
-  heroId: string,
-  relicId: string
-): GameState {
-  const heroIndex = state.heroes.findIndex((h) => h.id === heroId);
-  if (heroIndex === -1) return state;
-
-  const relicDef = RELIC_BY_ID[relicId];
-  if (!relicDef) return state;
-
-  const discount = state.reputation >= 2 ? 0.8 : 1.0;
-  const finalCost = Math.floor(relicDef.cost * discount);
-
-  if (state.salvage < finalCost) return state;
-
-  const hero = { ...state.heroes[heroIndex] };
-  hero.equippedRelics = [...hero.equippedRelics, { relicId, used: false }];
-
-  const nextHeroes = [...state.heroes];
-  nextHeroes[heroIndex] = hero;
-
-  return {
-    ...state,
-    salvage: state.salvage - finalCost,
-    heroes: nextHeroes,
-    combatLog: [
-      ...state.combatLog,
-      `${hero.name} purchased ${relicDef.name} for ${finalCost} salvage.`,
-    ],
-  };
+function removeMinusOnes(cards: ModifierCard[], count: number): { next: ModifierCard[]; removed: number } {
+  let removed = 0;
+  const next: ModifierCard[] = [];
+  for (const card of cards) {
+    if (removed < count && card.delta === -1 && card.multiplier === undefined) {
+      removed += 1;
+      continue;
+    }
+    next.push(card);
+  }
+  return { next, removed };
 }
 
-export function unlockHeroPerkInOutpost(
-  state: GameState,
-  heroId: string
-): GameState {
-  const heroIndex = state.heroes.findIndex((h) => h.id === heroId);
+export function unlockHeroPerkInOutpost(state: GameState, heroId: string): GameState {
+  const heroIndex = state.heroes.findIndex((hero) => hero.id === heroId);
   if (heroIndex === -1) return state;
-
-  const hero = { ...state.heroes[heroIndex] };
+  const current = cloneState(state);
+  const hero = current.heroes[heroIndex];
   if (hero.xp < 15) return state;
 
   hero.xp -= 15;
@@ -1508,34 +1854,19 @@ export function unlockHeroPerkInOutpost(
   hero.perksUnlocked = (hero.perksUnlocked || 0) + 1;
 
   const archetype = HERO_ARCHETYPES[hero.classId];
-  if (archetype && archetype.level2Cards) {
-    const existingIds = new Set(hero.hand.map((c) => c.id));
-    const nextCard = archetype.level2Cards.find((c) => !existingIds.has(c.id));
-    if (nextCard) {
-      hero.hand = [...hero.hand, nextCard];
-    }
+  if (archetype?.level2Cards) {
+    const owned = new Set([...hero.hand, ...hero.discard, ...hero.lost].map((card) => card.id));
+    const nextCard = archetype.level2Cards.find((card) => !owned.has(card.id));
+    if (nextCard) hero.hand = [...hero.hand, nextCard];
   }
 
-  const nextDeck = [...state.heroModifierDeck];
-  const minusOneIdx = nextDeck.findIndex((c) => c.delta === -1);
-  if (minusOneIdx !== -1) {
-    nextDeck.splice(minusOneIdx, 1);
-  }
-
-  const nextHeroes = [...state.heroes];
-  nextHeroes[heroIndex] = hero;
-
-  return {
-    ...state,
-    heroModifierDeck: nextDeck,
-    heroes: nextHeroes,
-    combatLog: [
-      ...state.combatLog,
-      `${hero.name} unlocked a Perk! Level ${hero.level}, Max HP ${hero.maxHp}.`,
-    ],
-  };
+  const fromDeck = removeMinusOnes(current.heroModifierDeck, 2);
+  const fromDiscard = removeMinusOnes(current.heroModifierDiscard, 2 - fromDeck.removed);
+  current.heroModifierDeck = fromDeck.next;
+  current.heroModifierDiscard = fromDiscard.next;
+  current.combatLog.push(`${hero.name} unlocked a Perk! Level ${hero.level}, Max HP ${hero.maxHp}.`);
+  return current;
 }
-
 export function returnToOutpost(state: GameState): GameState {
   let completed = [...state.completedScenarioIds];
   if (
@@ -1559,7 +1890,9 @@ export function returnToOutpost(state: GameState): GameState {
     longRestDeclared: false,
     topUsedThisTurn: false,
     bottomUsedThisTurn: false,
-    equippedRelics: hero.equippedRelics.map((r) => ({ ...r, used: false })),
+    equippedRelics: hero.equippedRelics
+      .filter((r) => r.relicId !== BOOTS_MARKER && !r.relicId.startsWith(MOVE_BONUS_PREFIX))
+      .map((r) => ({ ...r, used: false })),
   }));
 
   return {

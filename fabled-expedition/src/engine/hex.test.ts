@@ -95,11 +95,15 @@ describe('Hex & Spatial Engine', () => {
       const pointsStr = hexPolygonPoints(100, 100, 40);
       const points = pointsStr.split(' ');
       expect(points).toHaveLength(6);
-      for (const pt of points) {
-        const [x, y] = pt.split(',').map(Number);
+      const parsed = points.map((pt) => pt.split(',').map(Number));
+      for (const [x, y] of parsed) {
         expect(Number.isFinite(x)).toBe(true);
         expect(Number.isFinite(y)).toBe(true);
       }
+      // Pointy-top: one vertex sits directly above the center, a full size away.
+      const top = parsed.reduce((best, p) => (p[1] < best[1] ? p : best));
+      expect(top[0]).toBeCloseTo(100);
+      expect(top[1]).toBeCloseTo(60);
     });
   });
 
@@ -180,6 +184,47 @@ describe('Hex & Spatial Engine', () => {
         makeTile(2, 0),
       ];
       expect(hasLineOfSight(tilesMissing, { q: 0, r: 0 }, { q: 2, r: 0 })).toBe(false);
+    });
+
+    it('is symmetric, and a diagonal wall or closed door blocks both ways', () => {
+      const tiles: HexTile[] = [];
+      for (let q = -3; q <= 3; q++) {
+        for (let r = -3; r <= 3; r++) {
+          if (hexDistance({ q: 0, r: 0 }, { q, r }) > 3) continue;
+          const terrain =
+            q === 0 && r === 0 ? 'wall'
+            : q === 2 && r === -2 ? 'door'
+            : 'floor';
+          tiles.push(makeTile(q, r, terrain === 'door' ? { terrain, interacted: false } : { terrain }));
+        }
+      }
+
+      const coords = tiles.map((t) => ({ q: t.q, r: t.r }));
+      for (const a of coords) {
+        for (const b of coords) {
+          expect(hasLineOfSight(tiles, a, b)).toBe(hasLineOfSight(tiles, b, a));
+        }
+      }
+
+      // Straight line through the center wall.
+      expect(hasLineOfSight(tiles, { q: -2, r: 0 }, { q: 2, r: 0 })).toBe(false);
+      // Parallel line that misses the wall.
+      expect(hasLineOfSight(tiles, { q: -2, r: -1 }, { q: 2, r: -1 })).toBe(true);
+      // Cube-axis diagonal through the closed door at (2, -2).
+      expect(hasLineOfSight(tiles, { q: 0, r: 0 }, { q: 3, r: -3 })).toBe(false);
+      expect(hasLineOfSight(tiles, { q: 3, r: -3 }, { q: 0, r: 0 })).toBe(false);
+    });
+
+    it('obstacle on a diagonal does not block either direction', () => {
+      const tiles: HexTile[] = [];
+      for (let q = -3; q <= 3; q++) {
+        for (let r = -3; r <= 3; r++) {
+          if (hexDistance({ q: 0, r: 0 }, { q, r }) > 3) continue;
+          tiles.push(makeTile(q, r, q === 1 && r === -1 ? { terrain: 'obstacle' } : {}));
+        }
+      }
+      expect(hasLineOfSight(tiles, { q: 0, r: 0 }, { q: 3, r: -3 })).toBe(true);
+      expect(hasLineOfSight(tiles, { q: 3, r: -3 }, { q: 0, r: 0 })).toBe(true);
     });
   });
 
@@ -358,6 +403,83 @@ describe('Hex & Spatial Engine', () => {
       expect(jumpRes.has('1,0')).toBe(false);
       expect(jumpRes.has('2,0')).toBe(true);
     });
+
+    it('maxMove 0 can stay and cannot leave', () => {
+      const tiles = [makeTile(0, 0), makeTile(1, 0)];
+      const res = getReachableHexes({
+        start: { q: 0, r: 0 },
+        maxMove: 0,
+        tiles,
+        occupiedByAllies: [],
+        occupiedByEnemies: [],
+      });
+      expect([...res.keys()]).toEqual(['0,0']);
+    });
+
+    it('cannot enter walls or unrevealed tiles; a closed door still costs 1', () => {
+      const tiles = [
+        makeTile(0, 0),
+        makeTile(1, 0, { terrain: 'wall' }),
+        makeTile(0, 1, { revealed: false }),
+        makeTile(1, -1, { terrain: 'door', interacted: false }),
+      ];
+      const res = getReachableHexes({
+        start: { q: 0, r: 0 },
+        maxMove: 2,
+        tiles,
+        occupiedByAllies: [],
+        occupiedByEnemies: [],
+      });
+      expect(res.has('1,0')).toBe(false);
+      expect(res.has('0,1')).toBe(false);
+      expect(res.get('1,-1')).toEqual({ cost: 1, path: [{ q: 1, r: -1 }] });
+    });
+
+    it('routes around difficult terrain when that costs less movement', () => {
+      const tiles = [
+        makeTile(0, 0),
+        makeTile(1, 0, { terrain: 'difficult' }),
+        makeTile(2, 0, { terrain: 'difficult' }),
+        makeTile(3, 0),
+        makeTile(0, 1),
+        makeTile(1, 1),
+        makeTile(2, 1),
+        makeTile(3, 1),
+        makeTile(0, -1),
+        makeTile(1, -1),
+        makeTile(2, -1),
+        makeTile(3, -1),
+      ];
+      const res = getReachableHexes({
+        start: { q: 0, r: 0 },
+        maxMove: 4,
+        tiles,
+        occupiedByAllies: [],
+        occupiedByEnemies: [],
+      });
+      const dest = res.get('3,0');
+      expect(dest?.cost).toBe(4);
+      expect(dest?.path).toHaveLength(4);
+      expect(dest?.path.some((c) => c.q === 1 && c.r === 0)).toBe(false);
+      expect(dest?.path.some((c) => c.q === 2 && c.r === 0)).toBe(false);
+    });
+
+    it('hover can pass an enemy but can never end on an occupied hex', () => {
+      const tiles = [makeTile(0, 0), makeTile(1, 0), makeTile(2, 0)];
+      const res = getReachableHexes({
+        start: { q: 0, r: 0 },
+        maxMove: 2,
+        hover: true,
+        tiles,
+        occupiedByAllies: [],
+        occupiedByEnemies: [{ q: 1, r: 0 }],
+      });
+      expect(res.has('1,0')).toBe(false);
+      expect(res.get('2,0')).toEqual({
+        cost: 2,
+        path: [{ q: 1, r: 0 }, { q: 2, r: 0 }],
+      });
+    });
   });
 
   describe('findShortestPath', () => {
@@ -437,6 +559,30 @@ describe('Hex & Spatial Engine', () => {
       expect(path).toEqual([{ q: 1, r: 0 }, { q: 2, r: 0 }]);
     });
 
+    it('prefers a longer route that spends fewer movement points on difficult terrain', () => {
+      const tiles = [
+        makeTile(0, 0),
+        makeTile(1, 0, { terrain: 'difficult' }),
+        makeTile(2, 0, { terrain: 'difficult' }),
+        makeTile(3, 0),
+        makeTile(1, -1),
+        makeTile(2, -1),
+        makeTile(3, -1),
+      ];
+      const path = findShortestPath({
+        start: { q: 0, r: 0 },
+        goal: { q: 3, r: 0 },
+        tiles,
+        blockedCoords: [],
+      });
+      expect(path).toEqual([
+        { q: 1, r: -1 },
+        { q: 2, r: -1 },
+        { q: 3, r: -1 },
+        { q: 3, r: 0 },
+      ]);
+    });
+
     it('returns empty array if goal is unreachable', () => {
       const tiles = [
         makeTile(0, 0),
@@ -482,6 +628,15 @@ describe('Hex & Spatial Engine', () => {
       }
       expect(hexDistance(target, hexes[1])).toBe(1);
       expect(hexDistance(target, hexes[2])).toBe(1);
+    });
+
+    it('cone3 stays a 3-hex arc when the target is the origin', () => {
+      const hexes = getAoeHexes(origin, origin, 'cone3');
+      expect(hexes).toHaveLength(3);
+      expect(coordsEqual(hexes[0], origin)).toBe(true);
+      expect(hexDistance(origin, hexes[1])).toBe(1);
+      expect(hexDistance(origin, hexes[2])).toBe(1);
+      expect(hexDistance(hexes[1], hexes[2])).toBe(1);
     });
 
     it('triangle3 returns target plus 2 hexes forming 3-hex cluster directed away from origin', () => {

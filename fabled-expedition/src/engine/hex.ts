@@ -120,13 +120,19 @@ export function hasLineOfSight(tiles: HexTile[], from: HexCoord, to: HexCoord): 
     tileMap.set(coordKey(t), t);
   }
 
-  const q1 = from.q + 1e-6;
-  const r1 = from.r + 1e-6;
-  const s1 = -from.q - from.r - 2e-6;
+  // Interpolate in one canonical direction. Sampling A→B and B→A nudges a
+  // tie onto opposite hexes, so a corner wall would block only one way.
+  const [a, b] =
+    from.q < to.q || (from.q === to.q && from.r <= to.r) ? [from, to] : [to, from];
 
-  const q2 = to.q;
-  const r2 = to.r;
-  const s2 = -to.q - to.r;
+  // Shift both ends by the same cube offset so samples do not land on edges.
+  const NUDGE = 1e-6;
+  const q1 = a.q + NUDGE;
+  const r1 = a.r + NUDGE;
+  const s1 = -a.q - a.r - 2 * NUDGE;
+  const q2 = b.q + NUDGE;
+  const r2 = b.r + NUDGE;
+  const s2 = -b.q - b.r - 2 * NUDGE;
 
   const checkedKeys = new Set<string>();
 
@@ -368,7 +374,7 @@ export function findShortestPath(params: {
  * - 'single': [target]
  * - 'adjacentAll': hexNeighbors(origin)
  * - 'cleave': target plus 1 neighbor of origin adjacent to target (2 hexes total)
- * - 'cone3': target plus 2 neighbors of origin adjacent to target (3-hex arc in front of origin)
+ * - 'cone3': target plus up to 2 neighbors of origin adjacent to target (3-hex arc)
  * - 'triangle3': target plus 2 hexes adjacent to target forming a 3-hex cluster
  */
 export function getAoeHexes(origin: HexCoord, target: HexCoord, pattern: AoePattern): HexCoord[] {
@@ -392,7 +398,9 @@ export function getAoeHexes(origin: HexCoord, target: HexCoord, pattern: AoePatt
 
   if (pattern === 'cone3') {
     const candidates = originNeighbors.filter(n => hexDistance(n, target) === 1);
-    return [target, ...candidates];
+    // Adjacent targets match exactly two neighbors. Cap the rest so a
+    // degenerate target (the origin itself) cannot expand to all six.
+    return [target, ...candidates.slice(0, 2)];
   }
 
   if (pattern === 'triangle3') {

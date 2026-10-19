@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GameState, HeroClassId } from '../types/game';
+import { GameState } from '../types/game';
 import { SCENARIOS } from '../data/scenarios';
 import { RELIC_ITEMS } from '../data/relics';
 import { HERO_ARCHETYPES } from '../data/classes';
@@ -54,7 +54,10 @@ export const OutpostView: React.FC<OutpostViewProps> = ({
         </div>
 
         <div className="reputation-track-bar">
-          <div className="reputation-pin" style={{ left: `calc(${repPercent}% - 7px)` }} />
+          <div
+            className="reputation-pin"
+            style={{ left: `clamp(0px, calc(${repPercent}% - 7px), calc(100% - 14px))` }}
+          />
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#64748b' }}>
@@ -71,7 +74,6 @@ export const OutpostView: React.FC<OutpostViewProps> = ({
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {SCENARIOS.map((sc) => {
               const isCompleted = gameState.completedScenarioIds.includes(sc.id);
-              const isCurrent = gameState.scenarioId === sc.id;
 
               return (
                 <div
@@ -109,7 +111,7 @@ export const OutpostView: React.FC<OutpostViewProps> = ({
                     style={{ marginTop: '6px', alignSelf: 'flex-start' }}
                     onClick={() => onStartScenario(sc.id)}
                   >
-                    {isCompleted ? 'Replay Scenario' : isCurrent ? 'Resume Scenario' : 'Embark'}
+                    {isCompleted ? 'Replay Scenario' : 'Embark'}
                   </button>
                 </div>
               );
@@ -178,6 +180,11 @@ export const OutpostView: React.FC<OutpostViewProps> = ({
                           fontFamily: 'monospace',
                         }}
                       >
+                        {hasDiscount && finalCost !== item.cost && (
+                          <span style={{ textDecoration: 'line-through', opacity: 0.6 }}>
+                            {item.cost}
+                          </span>
+                        )}
                         ⚙️ {finalCost}
                       </span>
                       <button
@@ -219,7 +226,7 @@ export const OutpostView: React.FC<OutpostViewProps> = ({
                       onClick={() => onUnlockPerk(hero.id)}
                       title="Spend 15 XP to upgrade Attack Modifier Deck"
                     >
-                      {canPerk ? 'Upgrade Perk (-15 XP)' : 'Need 15 XP'}
+                      {canPerk ? 'Upgrade Perk (−15 XP)' : `${hero.xp}/15 XP`}
                     </button>
                   </div>
                 );

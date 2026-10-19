@@ -77,7 +77,7 @@ export const SCENARIOS: ScenarioConfig[] = [
     enemySpawns: [
       { enemyType: 'silt_lurker', q: 2, r: 3, roomId: 1 },
       { enemyType: 'silt_lurker', q: 3, r: 2, roomId: 1 },
-      { enemyType: 'drowned_construct', q: 3, r: 4, roomId: 1 },
+      { enemyType: 'drowned_construct', q: 3, r: 5, roomId: 1 },
       { enemyType: 'drowned_construct', q: 6, r: 2, roomId: 2 },
       { enemyType: 'drowned_construct', q: 7, r: 3, roomId: 2 },
       { enemyType: 'aether_wisp', q: 8, r: 1, roomId: 2 },
@@ -96,7 +96,7 @@ export const SCENARIOS: ScenarioConfig[] = [
               'Water rushes into the lower grates, clearing the flood. However, distant metallic thuds confirm guardians in the next chamber have been alerted.',
             reputationDelta: 1,
             clearDifficultTerrainInRoom: 1,
-            spawnEnemyInRoom: { roomId: 2, enemyType: 'drowned_construct', q: 7, r: 4 },
+            spawnEnemyInRoom: { roomId: 2, enemyType: 'drowned_construct', q: 6, r: 4 },
           },
           {
             label: 'Siphon the Pressure',
@@ -153,8 +153,8 @@ export const SCENARIOS: ScenarioConfig[] = [
       { enemyType: 'drowned_construct', q: 3, r: 4, roomId: 1 },
       { enemyType: 'corrupted_resonator', q: 8, r: 2, roomId: 2 },
       { enemyType: 'drowned_construct', q: 6, r: 3, roomId: 2 },
-      { enemyType: 'silt_lurker', q: 7, r: 4, roomId: 2 },
-      { enemyType: 'aether_wisp', q: 8, r: 4, roomId: 2 },
+      { enemyType: 'silt_lurker', q: 7, r: 2, roomId: 2 },
+      { enemyType: 'aether_wisp', q: 9, r: 1, roomId: 2 },
     ],
     loreNodes: {
       automaton_core: {
@@ -222,7 +222,7 @@ export const SCENARIOS: ScenarioConfig[] = [
       { enemyType: 'silt_lurker', q: 3, r: 4, roomId: 1 },
       { enemyType: 'dredge_overseer', q: 8, r: 2, roomId: 2 },
       { enemyType: 'drowned_construct', q: 6, r: 1, roomId: 2 },
-      { enemyType: 'aether_wisp', q: 7, r: 4, roomId: 2 },
+      { enemyType: 'aether_wisp', q: 9, r: 3, roomId: 2 },
       { enemyType: 'silt_lurker', q: 8, r: 1, roomId: 2 },
     ],
     loreNodes: {
