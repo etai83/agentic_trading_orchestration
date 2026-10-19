@@ -12,3 +12,10 @@
 [INFO] 2026-10-19T19:32:05.113Z [session=c0c0f911-7a2c-4038-98bd-cd51cf1af34e] Resolved stateDir: /Users/itaiharpaz/.a5c/state
 [INFO] 2026-10-19T19:32:05.113Z [session=c0c0f911-7a2c-4038-98bd-cd51cf1af34e] Checking session file at: /Users/itaiharpaz/.a5c/state/c0c0f911-7a2c-4038-98bd-cd51cf1af34e.md
 [INFO] 2026-10-19T19:32:05.114Z [session=c0c0f911-7a2c-4038-98bd-cd51cf1af34e] No active loop found for session c0c0f911-7a2c-4038-98bd-cd51cf1af34e — allowing exit
+[INFO] 2026-10-19T19:36:59.138Z handleHookRunStop started
+[INFO] 2026-10-19T19:36:59.140Z Hook input received
+[INFO] 2026-10-19T19:36:59.141Z [session=c0c0f911-7a2c-4038-98bd-cd51cf1af34e] Session ID: c0c0f911-7a2c-4038-98bd-cd51cf1af34e
+[INFO] 2026-10-19T19:36:59.141Z [session=c0c0f911-7a2c-4038-98bd-cd51cf1af34e] Resolved pluginRoot: /Users/itaiharpaz/.claude/plugins/cache/a5c-ai/babysitter/4.0.157
+[INFO] 2026-10-19T19:36:59.141Z [session=c0c0f911-7a2c-4038-98bd-cd51cf1af34e] Resolved stateDir: /Users/itaiharpaz/.a5c/state
+[INFO] 2026-10-19T19:36:59.141Z [session=c0c0f911-7a2c-4038-98bd-cd51cf1af34e] Checking session file at: /Users/itaiharpaz/.a5c/state/c0c0f911-7a2c-4038-98bd-cd51cf1af34e.md
+[INFO] 2026-10-19T19:36:59.141Z [session=c0c0f911-7a2c-4038-98bd-cd51cf1af34e] No active loop found for session c0c0f911-7a2c-4038-98bd-cd51cf1af34e — allowing exit
